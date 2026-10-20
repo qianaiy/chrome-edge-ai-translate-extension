@@ -169,3 +169,64 @@ export function describeEndpoint(input: { baseURL: string; model?: string; proto
     endpoint
   };
 }
+
+/** 本地服务不需要 API Key */
+const LOCAL_PROVIDERS = new Set(['ollama', 'lmstudio', 'local']);
+
+export interface ConfigCheck {
+  /** 能不能直接开始翻译 */
+  ok: boolean;
+  /** 缺了什么 */
+  missing: 'baseURL' | 'apiKey' | 'model' | null;
+  /** 给用户看的话 */
+  message: string | null;
+}
+
+/**
+ * 检查配置够不够开始翻译。
+ *
+ * 规则（弹窗和后台必须一致，否则会出现「弹窗说没配好、后台却能翻译」的矛盾）：
+ *   - baseURL 必须有
+ *   - model 必须有
+ *   - apiKey：远程服务必须要；本地服务（Ollama / LM Studio）可以为空
+ */
+export function checkConfigured(input: {
+  baseURL?: string;
+  apiKey?: string;
+  model?: string;
+}): ConfigCheck {
+  const baseURL = String(input.baseURL || '').trim();
+  const apiKey = String(input.apiKey || '').trim();
+  const model = String(input.model || '').trim();
+
+  if (!baseURL) {
+    return {
+      ok: false,
+      missing: 'baseURL',
+      message: '还没配好接口。点「设置」填 Base URL 和 API Key。'
+    };
+  }
+
+  if (!model) {
+    return { ok: false, missing: 'model', message: '还没选模型。点「设置」选一个模型。' };
+  }
+
+  const provider = detectProvider(baseURL);
+  const isLocal = !!provider && LOCAL_PROVIDERS.has(provider.id);
+
+  if (!apiKey && !isLocal) {
+    return {
+      ok: false,
+      missing: 'apiKey',
+      message: '还没填 API Key。点「设置」填一下（本地服务可以不填）。'
+    };
+  }
+
+  return { ok: true, missing: null, message: null };
+}
+
+/** 这个地址是不是本地服务（本地可以不填 Key） */
+export function isLocalEndpoint(baseURL: string): boolean {
+  const provider = detectProvider(baseURL);
+  return !!provider && LOCAL_PROVIDERS.has(provider.id);
+}

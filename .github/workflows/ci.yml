@@ -37,3 +37,29 @@ jobs:
           name: extension-dist
           path: dist/
           retention-days: 7
+
+  # 浏览器冒烟测试：真正把扩展装进 Chrome/Edge，验证后台能响应。
+  # 只在有桌面的 runner 上跑（Windows / macOS）。
+  smoke:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, edge]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - run: npm ci
+
+      - name: 冒烟测试 (${{ matrix.browser }})
+        run: |
+          if ("${{ matrix.browser }}" -eq "edge") {
+            npm run smoke:edge
+          } else {
+            npm run smoke
+          }

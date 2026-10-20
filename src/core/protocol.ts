@@ -55,9 +55,22 @@ export function buildRequest(
 
   if (!base) throw new Error('还没填接口地址，先去设置页填 Base URL');
 
+  /* system 消息的内容可能是字符串，也可能是图文混合数组。
+     两种都要取出文本，否则 Anthropic 分支里 system 会被整个丢掉
+     （它既要单独放进 body.system，又会从 messages[] 里过滤掉）。 */
   const systemText = messages
     .filter(m => m.role === 'system')
-    .map(m => (typeof m.content === 'string' ? m.content : ''))
+    .map(m =>
+      typeof m.content === 'string'
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content
+              .filter(p => p.type === 'text')
+              .map(p => String(p.text || ''))
+              .join('\n')
+          : ''
+    )
+    .filter(Boolean)
     .join('\n\n');
 
   if (protocol === 'anthropic') {
@@ -107,12 +120,13 @@ export function buildRequest(
   }
 
   if (protocol === 'gemini') {
-    const root = base
-      .replace(/\/models\/[^/]+$/i, '')
-      .replace(/\/(v1beta|v1)$/i, '');
+    /* 版本号要从「剥掉 /models/<model> 之后」的地址上判断，
+       否则 "…/v1/models/gemini-2.0-flash" 这种写法会被误判成 v1beta。 */
+    const withoutModel = base.replace(/\/models\/[^/]+$/i, '');
+    const version = /\/v1$/i.test(withoutModel) && !/v1beta/i.test(withoutModel) ? 'v1' : 'v1beta';
+    const root = withoutModel.replace(/\/(v1beta|v1)$/i, '');
     if (!root) throw new Error('Base URL 里没解析出主机名');
 
-    const version = /\/v1$/i.test(base) && !/v1beta/i.test(base) ? 'v1' : 'v1beta';
     const cleanModel = model.replace(/^models\//, '');
     const method = stream ? 'streamGenerateContent' : 'generateContent';
 

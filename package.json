@@ -13,6 +13,9 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "verify": "npm run typecheck && npm run test && npm run build",
+    "smoke": "node scripts/smoke.mjs",
+    "smoke:edge": "node scripts/smoke.mjs --edge",
+    "smoke:all": "node scripts/smoke.mjs && node scripts/smoke.mjs --edge",
     "lint:secrets": "node scripts/secret-scan.mjs"
   },
   "devDependencies": {

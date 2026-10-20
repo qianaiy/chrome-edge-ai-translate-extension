@@ -78,11 +78,14 @@
   }
 
   function parseTime(s) {
-    const m = String(s || '').trim().match(/(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?/);
+    /* 正则必须锚定：字幕里常有 "align:start" 这类尾巴，
+       不锚定的话 "abc 01:02.500" 也会被解析成 62.5，静默产生错误时间点。 */
+    const m = String(s || '').trim().match(/^(?:(\d+):)?(\d{1,2}):(\d{1,2})(?:[.,](\d{1,3}))?$/);
     if (!m) return null;
     const h = Number(m[1] || 0);
     const min = Number(m[2] || 0);
     const sec = Number(m[3] || 0);
+    if (min > 59 || sec > 59) return null;
     const ms = Number(String(m[4] || '0').padEnd(3, '0'));
     return h * 3600 + min * 60 + sec + ms / 1000;
   }
@@ -99,10 +102,17 @@
 
   function fmtSrtTime(t) {
     const s = Math.max(0, t || 0);
-    const h = Math.floor(s / 3600);
-    const m = Math.floor((s % 3600) / 60);
-    const sec = Math.floor(s % 60);
-    const ms = Math.round((s - Math.floor(s)) * 1000);
+    /* 毫秒必须落在 000–999。先把毫秒单独算出来，再判断是否要进位到秒，
+       否则 Math.round 会算出 1000，输出 "00:00:01,1000" 这种非法时间戳。 */
+    let totalSec = Math.floor(s);
+    let ms = Math.round((s - totalSec) * 1000);
+    if (ms >= 1000) {
+      ms -= 1000;
+      totalSec += 1;
+    }
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const sec = totalSec % 60;
     const p = (n, w = 2) => String(n).padStart(w, '0');
     return `${p(h)}:${p(m)}:${p(sec)},${p(ms, 3)}`;
   }

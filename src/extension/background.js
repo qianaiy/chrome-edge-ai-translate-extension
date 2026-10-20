@@ -225,9 +225,22 @@ function buildRequest(protocol, settings, messages, opts = {}) {
 
   if (!base) throw new Error('还没填接口地址，先去设置页填 Base URL');
 
+  /* system 消息的内容可能是字符串，也可能是图文混合数组。
+     两种都要取出文本，否则 Anthropic 分支里 system 会被整个丢掉
+     （它既要单独放进 body.system，又会从 messages[] 里过滤掉）。 */
   const systemText = messages
     .filter(m => m.role === 'system')
-    .map(m => (typeof m.content === 'string' ? m.content : ''))
+    .map(m =>
+      typeof m.content === 'string'
+        ? m.content
+        : Array.isArray(m.content)
+          ? m.content
+              .filter(p => p.type === 'text')
+              .map(p => String(p.text || ''))
+              .join('\n')
+          : ''
+    )
+    .filter(Boolean)
     .join('\n\n');
 
   /* 图片消息（漫画翻译用）：content 可能是数组 [{type:'text'|'image', ...}] */
@@ -280,12 +293,13 @@ function buildRequest(protocol, settings, messages, opts = {}) {
   }
 
   if (protocol === 'gemini') {
-    const root = base
-      .replace(/\/models\/[^/]+$/i, '')
-      .replace(/\/(v1beta|v1)$/i, '');
+    /* 版本号要从「剥掉 /models/<model> 之后」的地址上判断，
+       否则 "…/v1/models/gemini-2.0-flash" 这种写法会被误判成 v1beta。 */
+    const withoutModel = base.replace(/\/models\/[^/]+$/i, '');
+    const version = /\/v1$/i.test(withoutModel) && !/v1beta/i.test(withoutModel) ? 'v1' : 'v1beta';
+    const root = withoutModel.replace(/\/(v1beta|v1)$/i, '');
     if (!root) throw new Error('Base URL 里没解析出主机名');
 
-    const version = /\/v1$/i.test(base) && !/v1beta/i.test(base) ? 'v1' : 'v1beta';
     const cleanModel = model.replace(/^models\//, '');
     const method = stream ? 'streamGenerateContent' : 'generateContent';
 
@@ -877,6 +891,32 @@ async function fetchModels(settings) {
     }
   }
   throw new Error(errors.join('\n'));
+}
+
+/* 本地服务（Ollama / LM Studio）不需要 API Key */
+const LOCAL_PROVIDERS = new Set(['ollama', 'lmstudio', 'local']);
+
+function isLocalEndpoint(baseURL) {
+  const provider = detectProvider(baseURL);
+  return !!provider && LOCAL_PROVIDERS.has(provider.id);
+}
+
+/**
+ * 配置够不够开始翻译。
+ * 规则和弹窗保持一致：baseURL 和 model 必须有；apiKey 远程必须要，本地可以为空。
+ * 少了什么就直接告诉用户去设置，而不是让它去请求接口再报一个 401。
+ */
+function configProblem(settings) {
+  const baseURL = String(settings.baseURL || '').trim();
+  const apiKey = String(settings.apiKey || '').trim();
+  const model = String(settings.model || '').trim();
+
+  if (!baseURL) return '还没配置接口，点扩展图标 → 打开设置';
+  if (!model) return '还没选模型，点扩展图标 → 打开设置';
+  if (!apiKey && !isLocalEndpoint(baseURL)) {
+    return '还没填 API Key，点扩展图标 → 打开设置';
+  }
+  return null;
 }
 
 function describeEndpoint(settings) {
@@ -1493,10 +1533,25 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         return sendResponse({ ok: true, settings: await getSettings() });
       }
 
+      /* 配置体检：弹窗和后台共用同一套规则，避免两边说法不一致 */
+      if (msg.type === 'mxt:configStatus') {
+        const settings = await getSettings();
+        const problem = configProblem(settings);
+        return sendResponse({
+          ok: true,
+          configured: !problem,
+          problem,
+          baseURL: String(settings.baseURL || '').trim(),
+          hasKey: !!String(settings.apiKey || '').trim(),
+          local: isLocalEndpoint(settings.baseURL)
+        });
+      }
+
       if (msg.type === 'mxt:translate') {
         const settings = await getSettings();
-        if (!String(settings.baseURL || '').trim()) {
-          return sendResponse({ ok: false, error: '还没配置接口，点扩展图标 → 打开设置' });
+        const problem = configProblem(settings);
+        if (problem) {
+          return sendResponse({ ok: false, error: problem });
         }
         const translations = await translateMany(msg.texts, settings);
         return sendResponse({ ok: true, translations, model: settings.model });
@@ -1537,8 +1592,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
       if (msg.type === 'mxt:transcribe') {
         const settings = await getSettings();
-        if (!String(settings.baseURL || '').trim()) {
-          return sendResponse({ ok: false, error: '还没配置接口，点扩展图标 → 打开设置' });
+        const problem = configProblem(settings);
+        if (problem) {
+          return sendResponse({ ok: false, error: problem });
         }
         try {
           const r = await transcribeAudio(
@@ -1554,8 +1610,9 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
 
       if (msg.type === 'mxt:translateImage') {
         const settings = await getSettings();
-        if (!String(settings.baseURL || '').trim()) {
-          return sendResponse({ ok: false, error: '还没配置接口，点扩展图标 → 打开设置' });
+        const problem = configProblem(settings);
+        if (problem) {
+          return sendResponse({ ok: false, error: problem });
         }
         try {
           const r = await translateImage(
@@ -1657,8 +1714,9 @@ chrome.runtime.onConnect.addListener(port => {
 
     try {
       const settings = await getSettings();
-      if (!String(settings.baseURL || '').trim()) {
-        throw new Error('还没配置接口，点扩展图标 → 打开设置');
+      const problem = configProblem(settings);
+      if (problem) {
+        throw new Error(problem);
       }
 
       const list = Array.isArray(msg.texts) ? msg.texts : [];

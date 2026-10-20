@@ -1,4 +1,4 @@
-﻿# OS
+# OS
 .DS_Store
 Thumbs.db
 
@@ -16,6 +16,10 @@ dist/
 out/
 .vite/
 .cache/
+
+# Test coverage
+coverage/
+*.lcov
 
 # Secrets — never commit
 .env

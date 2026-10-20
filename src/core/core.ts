@@ -24,7 +24,10 @@ export {
   normBase,
   guessProtocol,
   protocolOrder,
-  describeEndpoint
+  describeEndpoint,
+  checkConfigured,
+  isLocalEndpoint,
+  type ConfigCheck
 } from './provider.js';
 
 export {
