@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>译点</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        width: 280px;
+        margin: 0;
+        padding: 14px;
+        background: #ffffff;
+        color: #111827;
+        font: 400 13px/1.55 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      h1 {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin: 0 0 12px;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      h1 span { color: #9ca3af; font-size: 11px; font-weight: 400; }
+      .row { margin-bottom: 10px; }
+      label { display: block; margin-bottom: 4px; color: #6b7280; font-size: 11px; }
+      select, button {
+        font: inherit;
+        width: 100%;
+        padding: 7px 9px;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+        background: #fff;
+        color: #111827;
+      }
+      button { cursor: pointer; }
+      button.primary {
+        background: #111827;
+        border-color: #111827;
+        color: #fff;
+        font-weight: 500;
+      }
+      button.primary:hover { background: #1f2937; }
+      button:disabled { opacity: .45; cursor: not-allowed; }
+      .hint { color: #9ca3af; font-size: 11px; line-height: 1.5; }
+      .hint.warn { color: #b45309; }
+      .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+      .foot {
+        margin-top: 12px;
+        padding-top: 10px;
+        border-top: 1px solid #f3f4f6;
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+      }
+      .link {
+        border: 0;
+        background: none;
+        padding: 0;
+        width: auto;
+        color: #2563eb;
+        font-size: 12px;
+        cursor: pointer;
+      }
+      .link:hover { text-decoration: underline; }
+      #status { margin-bottom: 10px; padding: 8px 10px; border-radius: 8px; background: #f9fafb; font-size: 12px; }
+    </style>
+  </head>
+  <body>
+    <h1>译点 <span id="model">—</span></h1>
+
+    <div id="status">读取设置中…</div>
+
+    <div class="row">
+      <label for="lang">目标语言</label>
+      <select id="lang">
+        <option>简体中文</option>
+        <option>繁體中文</option>
+        <option>English</option>
+        <option>日本語</option>
+        <option>한국어</option>
+        <option>Français</option>
+        <option>Deutsch</option>
+        <option>Español</option>
+        <option>Русский</option>
+      </select>
+    </div>
+
+    <div class="row">
+      <button id="translatePage" class="primary">翻译正文</button>
+    </div>
+
+    <div class="row grid">
+      <button id="translateAll">翻整页（含侧栏）</button>
+      <button id="toggleDisplay">仅译文</button>
+    </div>
+
+    <div class="row grid">
+      <button id="translateSubtitle">翻译视频字幕</button>
+      <button id="translateComic">翻漫画</button>
+    </div>
+
+    <div class="hint" id="shortcut">快捷键：Alt+T 正文 · Alt+W 整页 · Alt+Y 仅译文 · Alt+S 字幕</div>
+
+    <div class="hint" id="speed">—</div>
+
+    <div class="foot">
+      <button class="link" id="probe">测速</button>
+      <button class="link" id="openOptions">设置</button>
+      <button class="link" id="clearCache">清空缓存</button>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
