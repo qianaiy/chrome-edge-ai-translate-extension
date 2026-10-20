@@ -1,0 +1,25 @@
+{
+  "name": "chrome-edge-ai-translate-extension",
+  "version": "1.7.7",
+  "private": true,
+  "type": "module",
+  "description": "Chrome/Edge AI translation extension with a reusable translation core library.",
+  "license": "MIT",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "build:watch": "node scripts/build.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage",
+    "verify": "npm run typecheck && npm run test && npm run build",
+    "lint:secrets": "node scripts/secret-scan.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.2",
+    "@vitest/coverage-v8": "^5.0.5",
+    "esbuild": "^0.28.2",
+    "typescript": "^5.9.3",
+    "vitest": "^5.0.5"
+  }
+}
