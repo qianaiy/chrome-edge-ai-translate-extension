@@ -41,9 +41,10 @@
 │       ├── popup/           弹窗
 │       ├── options/         设置页
 │       └── icons/
-├── tests/               单元测试 + 扩展与核心的一致性测试
+├── tests/               单元测试 + 回归测试 + 扩展与核心的一致性测试
 ├── scripts/
 │   ├── build.mjs        构建 dist/（可加载的扩展目录）
+│   ├── smoke.mjs        浏览器冒烟测试（Chrome / Edge）
 │   └── secret-scan.mjs 敏感信息扫描
 └── .github/workflows/   CI
 ```
@@ -65,7 +66,25 @@ npm test             # 单元测试（vitest）
 npm run build        # 产出 dist/，可直接加载的扩展目录
 npm run verify       # typecheck + test + build 全跑一遍
 npm run lint:secrets # 敏感信息扫描
+npm run smoke        # 浏览器冒烟测试（Chrome）
+npm run smoke:edge   # 浏览器冒烟测试（Edge）
+npm run smoke:all    # 两个浏览器都跑
 ```
+
+### 浏览器冒烟测试
+
+`npm run smoke` 会用 CDP 真正把扩展装进浏览器，验证：
+
+- 扩展能加载，后台 service worker 注册成功
+- `mxt:getSettings` / `mxt:version` / `mxt:detect` 有正确响应
+- 缺 API Key 时给的是友好提示，不是崩溃也不是裸 401
+- 未知消息类型不会抛错
+- 内容脚本在真实网页上注入成功，且**没有破坏网页内容**
+
+> Chrome 137+ 已经忽略 `--load-extension` 命令行开关，所以脚本走 CDP 的
+> `Extensions.loadUnpacked`（要连 **browser 级** WebSocket，page target 上没这个方法）。
+> 消息必须从扩展页面发出——service worker 给自己发消息，它自己的
+> `onMessage` 监听器收不到。
 
 ### 装载扩展
 
