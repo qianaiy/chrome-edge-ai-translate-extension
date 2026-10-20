@@ -291,7 +291,22 @@ try {
   } catch {
     /* 忽略 */
   }
+  /* 等浏览器真正退出，否则它还占着 profile 目录的文件锁 */
+  for (let i = 0; i < 20; i++) {
+    if (proc.exitCode !== null || proc.signalCode !== null) break;
+    await sleep(250);
+  }
   await sleep(500);
-  rmSync(profile, { recursive: true, force: true });
+
+  /* 浏览器进程退出后文件锁可能还没立刻释放，直接删会 EPERM。
+     重试几次，并且失败也别让冒烟测试整体失败 —— 临时目录残留不是测试的失败原因。 */
+  for (let i = 0; i < 6; i++) {
+    try {
+      rmSync(profile, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+      break;
+    } catch {
+      await sleep(1000);
+    }
+  }
 }
 process.exit(ok ? 0 : 1);
