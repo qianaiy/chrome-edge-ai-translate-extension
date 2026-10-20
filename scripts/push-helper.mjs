@@ -24,8 +24,12 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = 'qianaiy/chrome-edge-ai-translate-extension';
 const API = `https://api.github.com/repos/${REPO}`;
 
-/** github.com 可用的 IP —— api.github.com 正常，github.com 不正常，只能绕 */
-const RESOLVED_IP = process.env.MXT_GITHUB_IP || '172.182.252.133';
+/**
+ * github.com 可用的 IP —— 这个网络环境里 DNS 给出的地址连不上 443，
+ * 但 api.github.com 正常。可以用 MXT_GITHUB_IP 覆盖。
+ * 注意：这条链路时好时坏，所以下面有重试。
+ */
+const RESOLVED_IP = process.env.MXT_GITHUB_IP || '20.27.177.113';
 
 const token = process.argv[2];
 const branch = process.argv[3] || 'feature/p0-baseline';
@@ -102,7 +106,7 @@ async function main() {
     console.log('  ! 探针未能清理，稍后请手动删除 .push-probe');
   }
 
-  /* ---- 3. 推送 ---- */
+  /* ---- 3. 推送（这条链路时好时坏，重试几次） ---- */
   const dir = mkdtempSync(join(tmpdir(), 'mxt-askpass-'));
   const askpass = join(dir, 'askpass.cmd');
   writeFileSync(askpass, `@echo off\r\necho ${token}\r\n`, 'utf8');
@@ -111,33 +115,48 @@ async function main() {
     ...process.env,
     GIT_ASKPASS: askpass,
     GIT_TERMINAL_PROMPT: '0',
-    GCM_INTERACTIVE: 'Never'
+    GCM_INTERACTIVE: 'Never',
+    /* 用环境变量传 -c 参数：在 Windows 上 shell:true 会把 "key=value" 里的
+       等号和引号搅乱，导致这个覆盖没生效、git 又连回那个坏 IP。 */
+    GIT_CONFIG_COUNT: '1',
+    GIT_CONFIG_KEY_0: 'http.curloptResolve',
+    GIT_CONFIG_VALUE_0: `github.com:443:${RESOLVED_IP}`
   };
 
-  console.log(`推送 ${branch} → ${remote} …`);
-  const push = spawnSync(
-    'git',
-    ['-c', `http.curloptResolve=github.com:443:${RESOLVED_IP}`, 'push', '-u', remote, branch],
-    { cwd: root, env, stdio: 'inherit', shell: true }
-  );
-
-  rmSync(dir, { recursive: true, force: true });
+  const ATTEMPTS = 4;
+  let push = { status: 1 };
+  for (let i = 1; i <= ATTEMPTS; i++) {
+    console.log(`推送 ${branch} → ${remote} （第 ${i}/${ATTEMPTS} 次）…`);
+    push = spawnSync('git', ['push', '-u', remote, branch], {
+      cwd: root,
+      env,
+      stdio: 'inherit',
+      shell: true
+    });
+    if (push.status === 0) break;
+    if (i < ATTEMPTS) {
+      console.log('  连接失败，等一下重试…');
+      await new Promise(r => setTimeout(r, 3000));
+    }
+  }
 
   if (push.status !== 0) {
     console.error('');
     console.error('推送失败。已删除临时凭据脚本。');
+    rmSync(dir, { recursive: true, force: true });
     process.exit(push.status || 1);
   }
 
+  /* ---- 4. 用 API 校验（api.github.com 比 github.com 稳） ---- */
   console.log('');
-  console.log('完成。远端分支：');
-  const ls = spawnSync('git', ['ls-remote', '--heads', remote, branch], {
-    cwd: root,
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
-    stdio: 'inherit',
-    shell: true
-  });
-  process.exit(ls.status === 0 ? 0 : 1);
-}
+  const verify = await api(`/branches/${encodeURIComponent(branch)}`);
+  if (verify.ok) {
+    console.log(`完成。远端 ${branch} = ${verify.json.commit.sha}`);
+  } else {
+    console.log('推送已完成，但校验失败，请手动确认。');
+  }
 
+  rmSync(dir, { recursive: true, force: true });
+  process.exit(verify.ok ? 0 : 1);
+}
 await main();
