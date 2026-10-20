@@ -1,0 +1,404 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>译点 · 设置</title>
+    <style>
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        padding: 32px 20px 64px;
+        background: #f7f8fa;
+        color: #111827;
+        font: 400 14px/1.6 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+      main { max-width: 680px; margin: 0 auto; }
+      h1 { margin: 0 0 4px; font-size: 20px; }
+      .sub { margin: 0 0 24px; color: #6b7280; font-size: 13px; }
+      .card {
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 12px;
+        padding: 20px;
+        margin-bottom: 16px;
+      }
+      .card h2 {
+        margin: 0 0 14px;
+        font-size: 14px;
+        font-weight: 600;
+        color: #374151;
+      }
+      .field { margin-bottom: 14px; }
+      .field:last-child { margin-bottom: 0; }
+      label { display: block; margin-bottom: 5px; font-size: 12px; color: #6b7280; }
+      input, select, textarea {
+        width: 100%;
+        padding: 9px 11px;
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #111827;
+        font: inherit;
+      }
+      textarea { min-height: 74px; resize: vertical; }
+      input:focus, select:focus, textarea:focus {
+        outline: 2px solid rgba(59, 130, 246, .35);
+        border-color: #93c5fd;
+      }
+      .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+      .row-inline { display: flex; gap: 8px; align-items: flex-start; }
+      .row-inline > input { flex: 1 1 auto; min-width: 0; }
+      .row-inline > button { flex: 0 0 auto; white-space: nowrap; }
+
+      /* 模型下拉：自己做，避免 datalist 按输入框内容过滤 + 去重 */
+      .combo-wrap { position: relative; flex: 1 1 auto; min-width: 0; }
+      .combo-wrap > input { width: 100%; padding-right: 34px; }
+      .caret {
+        position: absolute;
+        right: 4px;
+        top: 4px;
+        width: 28px;
+        height: 28px;
+        padding: 0;
+        border: 0;
+        border-radius: 6px;
+        background: transparent;
+        color: #6b7280;
+        line-height: 1;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .caret:hover { background: #f3f4f6; color: #111827; }
+      .combo {
+        position: absolute;
+        z-index: 30;
+        left: 0;
+        right: 0;
+        top: calc(100% + 4px);
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        box-shadow: 0 12px 32px rgba(0, 0, 0, .14);
+        overflow: hidden;
+      }
+      .combo-search {
+        width: 100%;
+        border: 0;
+        border-bottom: 1px solid #f3f4f6;
+        border-radius: 0;
+        padding: 9px 11px;
+      }
+      .combo-search:focus { outline: none; border-color: #f3f4f6; }
+      .combo-list { max-height: 260px; overflow-y: auto; padding: 4px; }
+      .combo-item {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 7px 9px;
+        border-radius: 7px;
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .combo-item .id {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .combo-item .tag {
+        flex: 0 0 auto;
+        font-size: 11px;
+        color: #9ca3af;
+        max-width: 45%;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .combo-item .badge {
+        flex: 0 0 auto;
+        font-size: 11px;
+        font-variant-numeric: tabular-nums;
+        padding: 1px 6px;
+        border-radius: 999px;
+        border: 1px solid transparent;
+      }
+      .badge.fast { color: #047857; background: #ecfdf5; border-color: #a7f3d0; }
+      .badge.mid { color: #b45309; background: #fffbeb; border-color: #fde68a; }
+      .badge.slow { color: #b91c1c; background: #fef2f2; border-color: #fecaca; }
+      .badge.fail { color: #fff; background: #b91c1c; border-color: #b91c1c; }
+      .badge.busy { color: #6b7280; background: #f3f4f6; border-color: #e5e7eb; }
+      .combo-item:hover,
+      .combo-item.active { background: #f3f4f6; }
+      .combo-item.is-current { color: #1d4ed8; font-weight: 500; }
+      .combo-empty { padding: 14px 10px; text-align: center; color: #9ca3af; font-size: 12px; }
+      .combo-foot {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 6px 8px 6px 10px;
+        border-top: 1px solid #f3f4f6;
+        font-size: 11px;
+        color: #9ca3af;
+      }
+      #modelFoot { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .combo-btns { flex: 0 0 auto; display: flex; align-items: center; gap: 6px; }
+      button.mini {
+        padding: 3px 8px;
+        border-radius: 6px;
+        font-size: 11px;
+        line-height: 1.5;
+        color: #4b5563;
+      }
+      .chk {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        margin: 0;
+        font-size: 11px;
+        color: #6b7280;
+        cursor: pointer;
+        white-space: nowrap;
+      }
+      .chk input { width: auto; margin: 0; }
+      .opt {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 0 0 6px;
+        font-size: 13px;
+        color: #111827;
+        cursor: pointer;
+      }
+      .opt input { width: auto; margin: 0; }
+      .hint code {
+        padding: 1px 4px;
+        border-radius: 4px;
+        background: #f3f4f6;
+        color: #4b5563;
+      }
+      .hint.good { color: #047857; }
+      .hint.bad { color: #b91c1c; }
+      .hint { margin-top: 5px; color: #9ca3af; font-size: 12px; line-height: 1.5; }
+      .actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+      button {
+        font: inherit;
+        padding: 9px 16px;
+        border-radius: 8px;
+        border: 1px solid #e5e7eb;
+        background: #fff;
+        color: #111827;
+        cursor: pointer;
+      }
+      button:hover { border-color: #d1d5db; }
+      button.primary {
+        background: #111827;
+        border-color: #111827;
+        color: #fff;
+        font-weight: 500;
+      }
+      button.primary:hover { background: #1f2937; }
+      button:disabled { opacity: .5; cursor: not-allowed; }
+      #testResult { font-size: 13px; }
+      #testResult.ok { color: #047857; }
+      #testResult.bad { color: #b91c1c; }
+      .stale {
+        margin: 0 0 16px;
+        padding: 12px 14px;
+        border-radius: 10px;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        color: #991b1b;
+        font-size: 13px;
+        line-height: 1.6;
+      }
+      .stale code {
+        padding: 1px 5px;
+        border-radius: 4px;
+        background: rgba(153, 27, 27, .1);
+      }
+      .warn {
+        margin-top: 8px;
+        padding: 10px 12px;
+        border-radius: 8px;
+        background: #fffbeb;
+        border: 1px solid #fde68a;
+        color: #92400e;
+        font-size: 12px;
+        line-height: 1.6;
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>译点 · 设置</h1>
+      <p class="sub">直连你自己的 AI 接口。所有翻译请求从本机发出，不经过任何第三方服务器。</p>
+
+      <div class="stale" id="stale" hidden>
+        <b>扩展后台还停在旧版本。</b>
+        当前页面是 <code>v<span id="pageVersion"></span></code>，后台是 <code>v<span id="swVersion"></span></code>，
+        所以新功能（比如拉取模型）会报「未知消息类型」。<br />
+        去 <code>chrome://extensions</code> 找到「译点」，点一下卡片上的 <b>刷新 ↻</b>，再重新打开本页即可。
+      </div>
+
+      <div class="card">
+        <h2>接口</h2>
+
+        <div class="field">
+          <label for="preset">服务商预设</label>
+          <select id="preset">
+            <option value="">— 选择后自动填下面几项 —</option>
+            <option value="openai">OpenAI</option>
+            <option value="deepseek">DeepSeek</option>
+            <option value="siliconflow">硅基流动 SiliconFlow</option>
+            <option value="moonshot">Moonshot 月之暗面</option>
+            <option value="zhipu">智谱 GLM</option>
+            <option value="claude">Anthropic Claude</option>
+            <option value="gemini">Google Gemini</option>
+            <option value="ollama">Ollama（本地）</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label for="protocol">接口协议</label>
+          <select id="protocol">
+            <option value="auto">自动识别（推荐）</option>
+            <option value="openai">OpenAI 兼容 /chat/completions</option>
+            <option value="anthropic">Anthropic /v1/messages</option>
+            <option value="gemini">Gemini :generateContent</option>
+          </select>
+          <div class="hint">
+            自动识别会先按 Base URL 和模型名猜，猜错就换协议重试，成功后记住结果。填不准也能用。
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="baseURL">Base URL</label>
+          <input id="baseURL" spellcheck="false" placeholder="https://api.deepseek.com/v1" />
+          <div class="hint" id="detected">只填域名也能用（比如 <code>https://api.deepseek.com</code>），路径会自动补全。</div>
+        </div>
+
+        <div class="field">
+          <label for="apiKey">API Key</label>
+          <input id="apiKey" type="password" spellcheck="false" placeholder="sk-..." />
+          <div class="hint">只存在本机 Chrome 的扩展存储里，不会同步到云端。Ollama 之类本地服务可以留空。</div>
+        </div>
+
+        <div class="field">
+          <label for="model">模型</label>
+          <div class="row-inline">
+            <div class="combo-wrap">
+              <input id="model" spellcheck="false" autocomplete="off" placeholder="deepseek-chat" />
+              <button type="button" id="modelToggle" class="caret" title="列出可用模型">▾</button>
+              <div class="combo" id="modelPanel" hidden>
+                <input
+                  id="modelSearch"
+                  class="combo-search"
+                  placeholder="搜索模型名…"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <div class="combo-list" id="modelList"></div>
+                <div class="combo-foot">
+                  <span id="modelFoot"></span>
+                  <span class="combo-btns">
+                    <label class="chk"><input type="checkbox" id="sortBySpeed" />按速度排序</label>
+                    <button type="button" id="probeAll" class="mini">测全部</button>
+                    <button type="button" id="clearSpeed" class="mini">清除测速</button>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <button type="button" id="loadModels">拉取模型</button>
+            <button type="button" id="probeModel">测速</button>
+          </div>
+          <div class="hint" id="modelHint">点「拉取模型」读取列表；之后点 ▾ 或输入框即可搜索选择，Esc 关闭后可手打模型名。</div>
+          <div class="hint" id="speedHint">「测速」会发一个 8 token 的极短请求，量首字延迟和出字速度，用来判断某个模型现在快不快。</div>
+        </div>
+
+        <div class="field">
+          <label for="visionModel">漫画翻译用的模型（可选）</label>
+          <input id="visionModel" spellcheck="false" autocomplete="off" placeholder="留空就用上面的模型" />
+          <div class="hint">翻漫画需要能看图的多模态模型（如 gpt-4o、gemini-2.0-flash、qwen-vl）。留空就复用上面的模型。</div>
+        </div>
+
+        <div class="field">
+          <label for="asrModel">语音识别模型（可选）</label>
+          <input id="asrModel" spellcheck="false" autocomplete="off" placeholder="whisper-1" />
+          <div class="hint">视频没有字幕时，会录一小段声音送去识别。填支持音频的模型名（whisper-1 / gpt-4o-transcribe / gemini-2.0-flash）。留空就只用现成字幕。</div>
+        </div>
+
+        <div class="row2">
+          <div class="field">
+            <label for="targetLang">默认目标语言</label>
+            <input id="targetLang" list="langs" placeholder="简体中文" />
+            <datalist id="langs">
+              <option>简体中文</option>
+              <option>繁體中文</option>
+              <option>English</option>
+              <option>日本語</option>
+              <option>한국어</option>
+              <option>Français</option>
+              <option>Deutsch</option>
+              <option>Español</option>
+              <option>Русский</option>
+            </datalist>
+          </div>
+          <div class="field">
+            <label for="temperature">温度（翻译建议 0 ~ 0.3）</label>
+            <input id="temperature" type="number" min="0" max="2" step="0.1" />
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>整页翻译</h2>
+        <div class="field">
+          <label for="displayMode">译文怎么显示（Alt+Y 随时切换）</label>
+          <select id="displayMode">
+            <option value="bilingual">双语对照：原文在上，译文在下</option>
+            <option value="translation">仅译文：原文透明，只留译文</option>
+          </select>
+        </div>
+        <label class="opt" for="autoDynamic">
+          <input type="checkbox" id="autoDynamic" />
+          <span>动态加载的新内容自动翻译</span>
+        </label>
+        <div class="hint">
+          单页应用（SPA）、无限滚动、点开评论区/展开更多这类后加载出来的内容，翻完页后会自动接着翻，不用再按一次快捷键。
+          关掉的话只翻按下快捷键那一刻页面上已有的正文。
+        </div>
+        <label class="opt" for="showFab">
+          <input type="checkbox" id="showFab" />
+          <span>在网页右侧显示快捷图标</span>
+        </label>
+        <div class="hint">不用记快捷键：点右侧那个「译」就能翻整页，翻完会变成「原」，再点一次还原。</div>
+      </div>
+
+      <div class="card">
+        <h2>质量与风格</h2>
+        <div class="field">
+          <label for="extraPrompt">附加要求（会拼进系统提示词，可留空）</label>
+          <textarea id="extraPrompt" placeholder="例如：技术术语保留英文原文，在其后用括号加中文；不要使用「您」，统一用「你」。"></textarea>
+        </div>
+        <div class="hint">如果是技术文档，写上「术语保留英文原文」通常比换模型更能提升观感。</div>
+      </div>
+
+      <div class="card">
+        <h2>操作</h2>
+        <div class="actions">
+          <button class="primary" id="save">保存</button>
+          <button id="test">测试连接</button>
+          <button id="clearCache">清空翻译缓存</button>
+          <span id="testResult"></span>
+        </div>
+        <div class="warn">
+          扩展需要「读取你在所有网站上的数据」权限，因为划词和整页翻译必须注入页面。它不收集、不上传任何浏览数据；
+          唯一的外发请求就是你配置的那个 AI 接口。
+        </div>
+      </div>
+    </main>
+
+    <script src="options.js"></script>
+  </body>
+</html>

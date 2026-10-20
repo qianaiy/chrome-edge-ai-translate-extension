@@ -1,0 +1,1743 @@
+'use strict';
+
+/* ------------------------------------------------------------------ *
+ * 译点 · 自建 AI 翻译
+ * 后台：配置管理、协议自动识别、调用模型、翻译缓存
+ *
+ * 支持三种协议：OpenAI 兼容 / Anthropic Messages / Gemini generateContent
+ * 识别顺序：用户指定 → 上次成功的协议 → URL 与模型名启发式 → 依次回退
+ * ------------------------------------------------------------------ */
+
+const DEFAULTS = {
+  baseURL: 'https://api.openai.com/v1',
+  apiKey: '',
+  model: 'gpt-4o-mini',
+  visionModel: '', // 漫画翻译用的多模态模型（留空就复用 model）
+  asrModel: '', // 视频没字幕时的语音识别模型（留空就禁用）
+  targetLang: '简体中文',
+  temperature: 0.2,
+  extraPrompt: '',
+  protocol: 'auto',
+  autoDynamic: true,
+  displayMode: 'bilingual',
+  showFab: true
+};
+
+const PROTOCOLS = ['openai', 'anthropic', 'gemini'];
+
+const PROTOCOL_LABEL = {
+  openai: 'OpenAI 兼容',
+  anthropic: 'Anthropic',
+  gemini: 'Gemini'
+};
+
+const CACHE_LIMIT = 2000;
+const CHUNK_MAX_ITEMS = 12;
+const CHUNK_MAX_CHARS = 3000;
+
+/* ---------------------------- 配置 ---------------------------- */
+
+async function getSettings() {
+  const { settings } = await chrome.storage.local.get('settings');
+  return { ...DEFAULTS, ...(settings || {}) };
+}
+
+/* ---------------------------- 缓存 ---------------------------- */
+
+let memCache = null;
+let flushTimer = null;
+
+function cacheKey(settings, text) {
+  return fnv(`${settings.model}|${settings.targetLang}|${text}`);
+}
+
+function fnv(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36) + '-' + str.length.toString(36);
+}
+
+async function loadCache() {
+  if (!memCache) {
+    const { cache } = await chrome.storage.local.get('cache');
+    memCache = cache && typeof cache === 'object' ? cache : {};
+  }
+  return memCache;
+}
+
+function scheduleFlush() {
+  if (flushTimer) return;
+  flushTimer = setTimeout(async () => {
+    flushTimer = null;
+    if (!memCache) return;
+    pruneCache();
+    try {
+      await chrome.storage.local.set({ cache: memCache });
+    } catch (_) {
+      memCache = null;
+    }
+  }, 1200);
+}
+
+function pruneCache() {
+  const keys = Object.keys(memCache);
+  if (keys.length <= CACHE_LIMIT) return;
+  keys
+    .sort((a, b) => (memCache[a].t || 0) - (memCache[b].t || 0))
+    .slice(0, keys.length - CACHE_LIMIT)
+    .forEach(k => delete memCache[k]);
+}
+
+/* --------------------- 协议识别：记忆成功结果 --------------------- */
+
+let protocolHints = null;
+let hintTimer = null;
+
+async function loadHints() {
+  if (!protocolHints) {
+    const { protocolHints: h } = await chrome.storage.local.get('protocolHints');
+    protocolHints = h && typeof h === 'object' ? h : {};
+  }
+  return protocolHints;
+}
+
+function hintKey(settings) {
+  const base = resolveBase(settings.baseURL).toLowerCase();
+  const model = String(settings.model || '').trim().toLowerCase();
+  return `${base}|${model}`;
+}
+
+function scheduleHintFlush() {
+  if (hintTimer) return;
+  hintTimer = setTimeout(async () => {
+    hintTimer = null;
+    if (!protocolHints) return;
+    try {
+      await chrome.storage.local.set({ protocolHints });
+    } catch (_) {
+      /* 存不下就算了，下次重新试探 */
+    }
+  }, 800);
+}
+
+/* --------------------- 协议识别：URL / 模型启发式 --------------------- */
+
+function normBase(baseURL) {
+  return String(baseURL || '').trim().replace(/\/+$/, '');
+}
+
+/* --------------------- 服务商识别 --------------------- */
+
+/* host 是主机名匹配，path 是用户只填域名时自动补的路径 */
+const PROVIDERS = [
+  { id: 'openai', name: 'OpenAI', host: /(^|\.)api\.openai\.com$/i, protocol: 'openai', path: '/v1' },
+  { id: 'azure', name: 'Azure OpenAI', host: /\.openai\.azure\.com$/i, protocol: 'openai', path: '' },
+  { id: 'deepseek', name: 'DeepSeek', host: /(^|\.)api\.deepseek\.com$/i, protocol: 'openai', path: '/v1' },
+  { id: 'moonshot', name: 'Moonshot 月之暗面', host: /(^|\.)api\.moonshot\.(cn|ai)$/i, protocol: 'openai', path: '/v1' },
+  { id: 'zhipu', name: '智谱 GLM', host: /(^|\.)open\.bigmodel\.cn$/i, protocol: 'openai', path: '/api/paas/v4' },
+  { id: 'siliconflow', name: '硅基流动', host: /(^|\.)api\.siliconflow\.(cn|com)$/i, protocol: 'openai', path: '/v1' },
+  { id: 'dashscope', name: '阿里云百炼', host: /dashscope\.aliyuncs\.com$/i, protocol: 'openai', path: '/compatible-mode/v1' },
+  { id: 'volcengine', name: '火山方舟', host: /ark\.cn-beijing\.volces\.com$/i, protocol: 'openai', path: '/api/v3' },
+  { id: 'qianfan', name: '百度千帆', host: /qianfan\.baidubce\.com$/i, protocol: 'openai', path: '/v2' },
+  { id: 'tencent', name: '腾讯混元', host: /(^|\.)api\.hunyuan\.tencentcloudapi\.com$/i, protocol: 'openai', path: '/v1' },
+  { id: 'groq', name: 'Groq', host: /(^|\.)api\.groq\.com$/i, protocol: 'openai', path: '/openai/v1' },
+  { id: 'openrouter', name: 'OpenRouter', host: /(^|\.)openrouter\.ai$/i, protocol: 'openai', path: '/api/v1' },
+  { id: 'together', name: 'Together AI', host: /(^|\.)api\.together\.(xyz|ai)$/i, protocol: 'openai', path: '/v1' },
+  { id: 'mistral', name: 'Mistral', host: /(^|\.)api\.mistral\.ai$/i, protocol: 'openai', path: '/v1' },
+  { id: 'xai', name: 'xAI Grok', host: /(^|\.)api\.x\.ai$/i, protocol: 'openai', path: '/v1' },
+  { id: 'minimax', name: 'MiniMax', host: /(^|\.)api\.minimax(chat)?\.(chat|com)$/i, protocol: 'openai', path: '/v1' },
+  { id: 'stepfun', name: '阶跃星辰', host: /(^|\.)api\.stepfun\.com$/i, protocol: 'openai', path: '/v1' },
+  { id: 'lingyi', name: '零一万物', host: /(^|\.)api\.lingyiwanwu\.com$/i, protocol: 'openai', path: '/v1' },
+  { id: 'baichuan', name: '百川智能', host: /(^|\.)api\.baichuan-ai\.com$/i, protocol: 'openai', path: '/v1' },
+  { id: 'anthropic', name: 'Anthropic Claude', host: /(^|\.)api\.anthropic\.com$/i, protocol: 'anthropic', path: '' },
+  { id: 'gemini', name: 'Google Gemini', host: /generativelanguage\.googleapis\.com$/i, protocol: 'gemini', path: '' },
+  { id: 'ollama', name: 'Ollama 本地', host: /^(localhost|127\.0\.0\.1|\[::1\]):11434$/i, protocol: 'openai', path: '/v1' },
+  { id: 'lmstudio', name: 'LM Studio 本地', host: /^(localhost|127\.0\.0\.1|\[::1\]):1234$/i, protocol: 'openai', path: '/v1' },
+  { id: 'local', name: '本地接口', host: /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i, protocol: 'openai', path: '/v1' }
+];
+
+function detectProvider(rawURL) {
+  const base = normBase(rawURL);
+  if (!base) return null;
+  let host;
+  try {
+    host = new URL(base).host;
+  } catch (_) {
+    return null;
+  }
+  return PROVIDERS.find(p => p.host.test(host)) || null;
+}
+
+/* 用户只填域名时，按服务商补上必要路径（api.deepseek.com → .../v1） */
+function resolveBase(rawURL) {
+  const base = normBase(rawURL);
+  if (!base) return base;
+  const provider = detectProvider(base);
+  if (!provider || !provider.path) return base;
+
+  let u;
+  try {
+    u = new URL(base);
+  } catch (_) {
+    return base;
+  }
+  const path = u.pathname.replace(/\/+$/, '');
+  if (path && path !== '/') return base; // 用户自己写了路径，尊重他
+  return base + provider.path;
+}
+
+function guessProtocol(settings) {
+  const provider = detectProvider(settings.baseURL);
+  if (provider && String(settings.protocol || 'auto').toLowerCase() === 'auto') {
+    return provider.protocol;
+  }
+
+  const model = String(settings.model || '').trim().toLowerCase();
+  if (/^claude/.test(model)) return 'anthropic';
+  if (/^gemini/.test(model)) return 'gemini';
+  return provider ? provider.protocol : 'openai';
+}
+
+function protocolOrder(settings, learned) {
+  const explicit = String(settings.protocol || 'auto').toLowerCase();
+  if (PROTOCOLS.includes(explicit)) return [explicit];
+
+  const guessed = guessProtocol(settings);
+  let order = [guessed, ...PROTOCOLS.filter(p => p !== guessed)];
+  if (learned && order.includes(learned)) {
+    order = [learned, ...order.filter(p => p !== learned)];
+  }
+  return order;
+}
+
+/* ------------------------- 构造请求 ------------------------- */
+
+function buildRequest(protocol, settings, messages, opts = {}) {
+  const stream = !!opts.stream;
+  const maxTokens = Number(opts.maxTokens) > 0 ? Math.floor(Number(opts.maxTokens)) : 0;
+  const key = String(settings.apiKey || '').trim();
+  const model = String(settings.model || '').trim();
+  const temperature = Number(settings.temperature ?? 0.2);
+  const base = resolveBase(settings.baseURL);
+
+  if (!base) throw new Error('还没填接口地址，先去设置页填 Base URL');
+
+  const systemText = messages
+    .filter(m => m.role === 'system')
+    .map(m => (typeof m.content === 'string' ? m.content : ''))
+    .join('\n\n');
+
+  /* 图片消息（漫画翻译用）：content 可能是数组 [{type:'text'|'image', ...}] */
+  const hasImage = messages.some(m => Array.isArray(m.content));
+
+  if (protocol === 'anthropic') {
+    let url;
+    if (/\/messages$/.test(base)) url = base;
+    else if (/\/v\d+$/.test(base)) url = base + '/messages';
+    else url = base + '/v1/messages';
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'anthropic-version': '2023-06-01'
+    };
+    if (key) {
+      headers['x-api-key'] = key;
+      // 走第三方 Anthropic 兼容代理时，有些只认 Bearer
+      if (!/anthropic\.com/i.test(base)) headers.Authorization = 'Bearer ' + key;
+    }
+
+    const body = {
+      model,
+      max_tokens: maxTokens || 4096,
+      temperature,
+      stream,
+      messages: messages
+        .filter(m => m.role !== 'system')
+        .map(m => ({
+          role: m.role === 'assistant' ? 'assistant' : 'user',
+          content: Array.isArray(m.content)
+            ? m.content.map(p =>
+                p.type === 'image'
+                  ? {
+                      type: 'image',
+                      source: {
+                        type: 'base64',
+                        media_type: p.mediaType || 'image/jpeg',
+                        data: p.data
+                      }
+                    }
+                  : { type: 'text', text: String(p.text || '') }
+              )
+            : String(m.content)
+        }))
+    };
+    if (systemText) body.system = systemText;
+
+    return { url, headers, body };
+  }
+
+  if (protocol === 'gemini') {
+    const root = base
+      .replace(/\/models\/[^/]+$/i, '')
+      .replace(/\/(v1beta|v1)$/i, '');
+    if (!root) throw new Error('Base URL 里没解析出主机名');
+
+    const version = /\/v1$/i.test(base) && !/v1beta/i.test(base) ? 'v1' : 'v1beta';
+    const cleanModel = model.replace(/^models\//, '');
+    const method = stream ? 'streamGenerateContent' : 'generateContent';
+
+    const qs = [];
+    if (stream) qs.push('alt=sse');
+    if (key) qs.push('key=' + encodeURIComponent(key));
+
+    const url =
+      `${root}/${version}/models/${encodeURIComponent(cleanModel)}:${method}` +
+      (qs.length ? `?${qs.join('&')}` : '');
+
+    const contents = messages
+      .filter(m => m.role !== 'system')
+      .map(m => ({
+        role: m.role === 'assistant' ? 'model' : 'user',
+        parts: Array.isArray(m.content)
+          ? m.content.map(p =>
+              p.type === 'image'
+                ? { inline_data: { mime_type: p.mediaType || 'image/jpeg', data: p.data } }
+                : { text: String(p.text || '') }
+            )
+          : [{ text: String(m.content) }]
+      }));
+
+    const body = {
+      contents,
+      generationConfig: { temperature }
+    };
+    if (maxTokens) body.generationConfig.maxOutputTokens = maxTokens;
+    if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
+
+    return { url, headers: { 'Content-Type': 'application/json' }, body };
+  }
+
+  // openai 兼容
+  const url = /\/chat\/completions$/.test(base) ? base : base + '/chat/completions';
+  const headers = { 'Content-Type': 'application/json' };
+  if (key) headers.Authorization = 'Bearer ' + key;
+
+  return {
+    url,
+    headers,
+    body: {
+      model,
+      messages: messages.map(m => ({
+        role: m.role,
+        content: Array.isArray(m.content)
+          ? m.content.map(p =>
+              p.type === 'image'
+                ? { type: 'image_url', image_url: { url: `data:${p.mediaType || 'image/jpeg'};base64,${p.data}` } }
+                : { type: 'text', text: String(p.text || '') }
+            )
+          : String(m.content)
+      })),
+      temperature,
+      stream,
+      ...(maxTokens ? { max_tokens: maxTokens } : {})
+    }
+  };
+}
+
+/* ------------------------- 解析响应 ------------------------- */
+
+/* 不按协议解析，按结构认：三种协议的返回形状互不重叠 */
+function extractText(json) {
+  if (!json || typeof json !== 'object') return null;
+
+  // OpenAI 兼容
+  const choice = json.choices?.[0]?.message?.content;
+  if (typeof choice === 'string') return choice;
+  if (Array.isArray(choice)) {
+    const t = choice.map(p => (typeof p === 'string' ? p : p?.text || '')).join('');
+    if (t) return t;
+  }
+
+  // Anthropic Messages
+  if (Array.isArray(json.content)) {
+    const t = json.content.map(p => p?.text || '').join('');
+    if (t) return t;
+  }
+
+  // Gemini generateContent
+  const parts = json.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts)) {
+    const t = parts.map(p => p?.text || '').join('');
+    if (t) return t;
+  }
+
+  return null;
+}
+
+/* ------------------------- 单次调用 ------------------------- */
+
+const RETRYABLE_STATUS = new Set([400, 401, 403, 404, 405, 422]);
+
+/* 有些接口不认 max_tokens（只认 max_completion_tokens）——这种 400 换协议救不了，
+   要让调用方去掉限制重试，而不是傻乎乎地去试 Anthropic / Gemini */
+const MAX_TOKENS_RE = /max_tokens|max_completion_tokens|maxoutputtokens/i;
+
+async function callOnce(protocol, settings, messages) {
+  const req = buildRequest(protocol, settings, messages);
+
+  let res;
+  try {
+    res = await fetch(req.url, {
+      method: 'POST',
+      headers: req.headers,
+      body: JSON.stringify(req.body)
+    });
+  } catch (e) {
+    const err = new Error(`连不上接口：${e?.message || e}（检查 Base URL、网络或代理）`);
+    err.retryable = false;
+    throw err;
+  }
+
+  const raw = await res.text();
+  let json = null;
+  try {
+    json = JSON.parse(raw);
+  } catch (_) {
+    /* 非 JSON，下面按文本处理 */
+  }
+
+  if (!res.ok) {
+    const detail =
+      json?.error?.message ||
+      json?.message ||
+      json?.error ||
+      raw.slice(0, 300) ||
+      '(空响应)';
+    const err = new Error(
+      `接口 ${res.status}：${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+    );
+    const detailText = typeof detail === 'string' ? detail : JSON.stringify(detail);
+    err.maxTokens = MAX_TOKENS_RE.test(detailText);
+    err.retryable = RETRYABLE_STATUS.has(res.status) && !err.maxTokens;
+    throw err;
+  }
+
+  const text = extractText(json);
+  if (typeof text !== 'string' || !text.trim()) {
+    const err = new Error('接口返回里找不到文本内容，可能不是这三种协议之一');
+    err.retryable = true;
+    throw err;
+  }
+  return text.trim();
+}
+
+/* ------------------------- 主入口 ------------------------- */
+
+async function chat(settings, messages) {
+  const hints = await loadHints();
+  const key = hintKey(settings);
+  const order = protocolOrder(settings, hints[key]);
+
+  const errors = [];
+  for (const protocol of order) {
+    try {
+      const text = await callOnce(protocol, settings, messages);
+      if (hints[key] !== protocol) {
+        hints[key] = protocol;
+        scheduleHintFlush();
+      }
+      return { text, protocol };
+    } catch (e) {
+      errors.push(`${PROTOCOL_LABEL[protocol]}：${e?.message || e}`);
+      if (e?.retryable === false) break;
+    }
+  }
+
+  if (errors.length === 1) throw new Error(errors[0]);
+  throw new Error('三种协议都没成功：\n' + errors.join('\n'));
+}
+
+/* ------------------------- 流式调用 ------------------------- */
+
+function extractDelta(json) {
+  if (!json || typeof json !== 'object') return '';
+
+  // OpenAI 兼容
+  const d = json.choices?.[0]?.delta?.content;
+  if (typeof d === 'string') return d;
+  if (Array.isArray(d)) {
+    const t = d.map(p => (typeof p === 'string' ? p : p?.text || '')).join('');
+    if (t) return t;
+  }
+
+  // Anthropic
+  if (typeof json.delta?.text === 'string') return json.delta.text;
+
+  // Gemini
+  const parts = json.candidates?.[0]?.content?.parts;
+  if (Array.isArray(parts)) return parts.map(p => p?.text || '').join('');
+
+  return '';
+}
+
+async function callOnceStream(protocol, settings, messages, onDelta, opts = {}) {
+  const req = buildRequest(protocol, settings, messages, { stream: true, maxTokens: opts.maxTokens });
+
+  /* 上游「不吐字也不断开」是最难受的情况：页面会一直卡在「翻译中」。
+     所以给流式读取加一个「多久没新内容就放弃」的看门狗。 */
+  const stallMs =
+    Number(opts.stallMs) > 0 ? Number(opts.stallMs) : Number(settings.stallMs) > 0 ? Number(settings.stallMs) : 30000;
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  let stalled = false;
+  let stallTimer = null;
+
+  const bumpStall = () => {
+    if (!controller) return;
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = setTimeout(() => {
+      stalled = true;
+      controller.abort();
+    }, stallMs);
+  };
+
+  const stopStall = () => {
+    if (stallTimer) clearTimeout(stallTimer);
+    stallTimer = null;
+  };
+
+  if (controller) {
+    bumpStall();
+    if (opts.signal) {
+      if (opts.signal.aborted) controller.abort();
+      else opts.signal.addEventListener('abort', () => controller.abort(), { once: true });
+    }
+  }
+
+  const signal = controller ? controller.signal : opts.signal;
+
+  let res;
+  try {
+    res = await fetch(req.url, {
+      method: 'POST',
+      headers: req.headers,
+      body: JSON.stringify(req.body),
+      ...(signal ? { signal } : {})
+    });
+  } catch (e) {
+    stopStall();
+    if (e?.name === 'AbortError') {
+      const err = new Error(stalled ? '等了太久没等到输出，先停下（接口可能卡住了）' : '超时未响应');
+      err.retryable = false;
+      err.timeout = true;
+      throw err;
+    }
+    const err = new Error(`连不上接口：${e?.message || e}（检查 Base URL、网络或代理）`);
+    err.retryable = false;
+    throw err;
+  }
+
+  const contentType = (res.headers && typeof res.headers.get === 'function' && res.headers.get('content-type')) || '';
+
+  // 有些代理无视 stream 参数，直接回整包 JSON —— 当一次性 delta 处理
+  if (!res.ok || !res.body || /application\/json/i.test(contentType)) {
+    const raw = await res.text();
+    stopStall();
+
+    if (!res.ok) {
+      let json = null;
+      try {
+        json = JSON.parse(raw);
+      } catch (_) {
+        /* 非 JSON */
+      }
+      const detail = json?.error?.message || json?.message || json?.error || raw.slice(0, 300) || '(空响应)';
+      const err = new Error(
+        `接口 ${res.status}：${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+      );
+      const detailText = typeof detail === 'string' ? detail : JSON.stringify(detail);
+      err.maxTokens = MAX_TOKENS_RE.test(detailText);
+      err.retryable = RETRYABLE_STATUS.has(res.status) && !err.maxTokens;
+      throw err;
+    }
+
+    let json = null;
+    try {
+      json = JSON.parse(raw);
+    } catch (_) {
+      /* 非 JSON */
+    }
+    const text = extractText(json);
+    if (!text) {
+      const err = new Error('接口返回里找不到文本内容，可能不是这三种协议之一');
+      err.retryable = true;
+      throw err;
+    }
+    onDelta(text);
+    return text.trim();
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let acc = '';
+
+  const handleLine = line => {
+    const trimmed = line.replace(/\r$/, '');
+    if (!trimmed || trimmed.startsWith(':')) return;
+    if (!trimmed.startsWith('data:')) return;
+    const payload = trimmed.slice(5).trim();
+    if (!payload || payload === '[DONE]') return;
+    let json = null;
+    try {
+      json = JSON.parse(payload);
+    } catch (_) {
+      return;
+    }
+    if (json?.error) {
+      const err = new Error(json.error.message || JSON.stringify(json.error));
+      err.retryable = false;
+      throw err;
+    }
+    const delta = extractDelta(json);
+    if (delta) {
+      acc += delta;
+      onDelta(delta);
+    }
+  };
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bumpStall(); // 只要还在出字，就把看门狗往后推
+      buffer += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buffer.indexOf('\n')) >= 0) {
+        const line = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 1);
+        handleLine(line);
+      }
+    }
+    if (buffer) handleLine(buffer);
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      const err = new Error(stalled ? '等了太久没等到输出，先停下（接口可能卡住了）' : '超时未响应');
+      err.retryable = false;
+      err.timeout = true;
+      throw err;
+    }
+    if (e && typeof e.retryable === 'boolean') throw e;
+    const err = new Error('流式读取中断：' + (e?.message || e));
+    err.retryable = false;
+    throw err;
+  } finally {
+    stopStall();
+    try {
+      reader.releaseLock();
+    } catch (_) {
+      /* 忽略 */
+    }
+  }
+
+  if (!acc.trim()) {
+    const err = new Error('流式返回为空');
+    err.retryable = true;
+    throw err;
+  }
+  return acc.trim();
+}
+
+async function chatStream(settings, messages, onDelta, opts = {}) {
+  const hints = await loadHints();
+  const key = hintKey(settings);
+  const order = protocolOrder(settings, hints[key]);
+
+  const errors = [];
+  for (const protocol of order) {
+    let emitted = false;
+    try {
+      const text = await callOnceStream(
+        protocol,
+        settings,
+        messages,
+        delta => {
+          emitted = true;
+          onDelta(delta);
+        },
+        opts
+      );
+      if (hints[key] !== protocol) {
+        hints[key] = protocol;
+        scheduleHintFlush();
+      }
+      return { text, protocol };
+    } catch (e) {
+      errors.push(`${PROTOCOL_LABEL[protocol]}：${e?.message || e}`);
+      // 已经吐字了就不能换协议，否则会重复输出
+      if (emitted) break;
+      if (e?.retryable === false) break;
+    }
+  }
+
+  if (errors.length === 1) throw new Error(errors[0]);
+  throw new Error('三种协议都没成功：\n' + errors.join('\n'));
+}
+
+/* ------------------------- 测速 ------------------------- */
+
+/* 发一个极短请求，量「首字延迟 / 总耗时 / 出字速度」。maxTokens 压到 8，基本不花钱。
+   用流式请求，因为首字延迟才是翻译时真正能感觉到的那个数。 */
+async function probeModel(settings, opts = {}) {
+  const target = { ...settings, model: String(opts.model || settings.model || '').trim() };
+  if (!target.model) throw new Error('先选好模型再测速');
+
+  const timeoutMs = Number(opts.timeoutMs) > 0 ? Number(opts.timeoutMs) : 20000;
+  const started = Date.now();
+  let firstAt = 0;
+  let chars = 0;
+
+  const controller = typeof AbortController === 'function' ? new AbortController() : null;
+  const timer = controller
+    ? setTimeout(() => {
+        controller.abort();
+      }, timeoutMs)
+    : null;
+
+  try {
+    const ask = maxTokens =>
+      chatStream(
+        target,
+        [{ role: 'user', content: '只回复 OK' }],
+        delta => {
+          if (!firstAt) firstAt = Date.now() - started;
+          chars += delta.length;
+        },
+        { maxTokens, signal: controller ? controller.signal : undefined }
+      );
+
+    let result;
+    try {
+      result = await ask(8);
+    } catch (e) {
+      // 少数接口不认 max_tokens（比如只支持 max_completion_tokens），去掉限制再试一次
+      if (!/max_tokens|max_completion_tokens|maxoutputtokens/i.test(e?.message || '')) throw e;
+      firstAt = 0;
+      chars = 0;
+      result = await ask(0);
+    }
+
+    const { text, protocol } = result;
+    const totalMs = Date.now() - started;
+    const ttftMs = firstAt || totalMs;
+    const genMs = Math.max(1, totalMs - ttftMs);
+    const outChars = chars || String(text || '').length;
+
+    return {
+      ok: true,
+      model: target.model,
+      protocol,
+      protocolLabel: PROTOCOL_LABEL[protocol],
+      ttftMs,
+      totalMs,
+      chars: outChars,
+      charsPerSec: Math.round((outChars / genMs) * 1000 * 10) / 10
+    };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/* ------------------------- 模型列表 ------------------------- */
+
+/* 明显不是对话模型的：翻译用不上，标记出来让设置页折叠 */
+const NON_CHAT_RE =
+  /(embed|embedding|whisper|tts|audio|speech|image|dall-e|moderation|rerank|bge|gte-|stable-diffusion|sdxl|flux|ocr|transcribe|voice)/i;
+
+function normalizeModels(protocol, json) {
+  const out = [];
+
+  if (protocol === 'gemini') {
+    for (const m of json?.models || []) {
+      const id = String(m.name || '').replace(/^models\//, '');
+      if (!id) continue;
+      const methods = m.supportedGenerationMethods;
+      if (Array.isArray(methods) && !methods.includes('generateContent')) continue;
+      out.push({ id, label: m.displayName || id });
+    }
+  } else {
+    const arr = Array.isArray(json?.data)
+      ? json.data
+      : Array.isArray(json?.models)
+        ? json.models
+        : [];
+    for (const m of arr) {
+      const id = String(m.id || m.name || m.model || '').replace(/^models\//, '');
+      if (!id) continue;
+      out.push({ id, label: m.display_name || m.displayName || id });
+    }
+  }
+
+  const seen = new Set();
+  return out
+    .filter(m => (seen.has(m.id) ? false : seen.add(m.id)))
+    .map(m => ({ id: m.id, label: m.label, chat: !NON_CHAT_RE.test(m.id) }))
+    .sort((a, b) => {
+      if (a.chat !== b.chat) return a.chat ? -1 : 1;
+      return a.id.localeCompare(b.id);
+    });
+}
+
+async function listModelsOnce(protocol, settings) {
+  const base = resolveBase(settings.baseURL);
+  const key = String(settings.apiKey || '').trim();
+  const headers = { 'Content-Type': 'application/json' };
+  let url;
+
+  if (protocol === 'anthropic') {
+    url = /\/v1$/.test(base) ? base + '/models?limit=100' : base + '/v1/models?limit=100';
+    if (key) {
+      headers['x-api-key'] = key;
+      headers['anthropic-version'] = '2023-06-01';
+      if (!/anthropic\.com/i.test(base)) headers.Authorization = 'Bearer ' + key;
+    }
+  } else if (protocol === 'gemini') {
+    const root = base.replace(/\/models\/[^/]+$/i, '').replace(/\/(v1beta|v1)$/i, '');
+    url = `${root}/v1beta/models?pageSize=200` + (key ? `&key=${encodeURIComponent(key)}` : '');
+  } else {
+    url = base + '/models';
+    if (key) headers.Authorization = 'Bearer ' + key;
+  }
+
+  let res;
+  try {
+    res = await fetch(url, { method: 'GET', headers });
+  } catch (e) {
+    const err = new Error(`连不上接口：${e?.message || e}`);
+    err.retryable = false;
+    throw err;
+  }
+
+  const raw = await res.text();
+  let json = null;
+  try {
+    json = JSON.parse(raw);
+  } catch (_) {
+    /* 非 JSON */
+  }
+
+  if (!res.ok) {
+    const detail =
+      json?.error?.message || json?.message || json?.error || raw.slice(0, 200) || '(空响应)';
+    const err = new Error(
+      `接口 ${res.status}：${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+    );
+    err.retryable = RETRYABLE_STATUS.has(res.status);
+    throw err;
+  }
+
+  const models = normalizeModels(protocol, json);
+  if (!models.length) {
+    const err = new Error('接口没返回任何可用模型');
+    err.retryable = true;
+    throw err;
+  }
+  return models;
+}
+
+async function fetchModels(settings) {
+  const resolved = { ...settings, baseURL: resolveBase(settings.baseURL) };
+  if (!resolved.baseURL) throw new Error('先填 Base URL，再拉模型列表');
+
+  const provider = detectProvider(resolved.baseURL);
+  const hints = await loadHints();
+  const order = protocolOrder(resolved, hints[hintKey(resolved)]);
+  const errors = [];
+
+  for (const protocol of order) {
+    try {
+      const models = await listModelsOnce(protocol, resolved);
+      const hk = hintKey(resolved);
+      if (hints[hk] !== protocol) {
+        hints[hk] = protocol;
+        scheduleHintFlush();
+      }
+      return {
+        models,
+        protocol,
+        protocolLabel: PROTOCOL_LABEL[protocol],
+        provider: provider ? provider.name : null,
+        baseURL: resolved.baseURL
+      };
+    } catch (e) {
+      errors.push(`${PROTOCOL_LABEL[protocol]}：${e?.message || e}`);
+      if (e?.retryable === false) break;
+    }
+  }
+  throw new Error(errors.join('\n'));
+}
+
+function describeEndpoint(settings) {
+  const base = resolveBase(settings.baseURL);
+  const provider = detectProvider(base);
+  const protocol = provider ? provider.protocol : 'openai';
+  return {
+    baseURL: base,
+    providerId: provider ? provider.id : null,
+    providerName: provider ? provider.name : null,
+    known: !!provider,
+    protocol,
+    protocolLabel: PROTOCOL_LABEL[protocol]
+  };
+}
+
+function stripMarkers(text) {  return String(text || '')
+    .replace(/^\s*<<<\s*\d+\s*>>>\s*/, '')
+    .trim();
+}
+
+function systemPromptSingle(s) {
+  const extra = String(s.extraPrompt || '').trim();
+  const lines = [
+    `你是专业翻译。把用户给出的一段文本翻译成${s.targetLang}。`,
+    '要求：只输出译文本身，不要编号、不要解释、不要加引号、不要复述原文。',
+    '保持原文语气与术语；代码、URL、变量名、占位符原样保留。',
+    '若原文已是目标语言，直接原样输出。'
+  ];
+  if (extra) lines.push(`额外要求：${extra}`);
+  return lines.join('\n');
+}
+
+/* ------------------------- 提示词 ------------------------- */
+
+function systemPrompt(s) {
+  const extra = String(s.extraPrompt || '').trim();
+  const lines = [
+    `你是专业翻译。把用户给出的每一段文本翻译成${s.targetLang}。`,
+    '严格遵守：',
+    '1. 输出必须沿用输入的编号标记 <<<n>>>，每段译文前一个，数量和顺序都不能变。',
+    '2. 只输出译文，不要解释、不要加引号、不要拆分或合并段落。',
+    '3. 保持原文语气与术语统一；技术内容按行业惯例翻译，不要生硬直译。',
+    '4. 代码、命令、URL、邮箱、变量名、占位符（如 %s、{name}、<tag>）保持原样。',
+    '5. 某段本身已是目标语言、或只是数字/符号，就原样返回该段。',
+    '6. 原文里形如 {{1}}、{{2}} 的标记表示分段位置，必须原样保留、顺序不变，只翻译标记后面的文字。'
+  ];
+  if (extra) lines.push(`额外要求：${extra}`);
+  return lines.join('\n');
+}
+
+/* ------------------------- 标记解析 ------------------------- */
+
+const MARK_RE = /<<<\s*(\d+)\s*>>>([\s\S]*?)(?=<<<\s*\d+\s*>>>|$)/g;
+
+function parseMarked(text, count) {
+  const out = new Array(count).fill(null);
+  MARK_RE.lastIndex = 0;
+  let m;
+  while ((m = MARK_RE.exec(text)) !== null) {
+    const i = Number(m[1]) - 1;
+    if (i >= 0 && i < count) {
+      const v = m[2].trim();
+      if (v) out[i] = v;
+    }
+  }
+  return out;
+}
+
+/* ------------------------- 批量翻译 ------------------------- */
+
+async function translateChunk(list, settings) {
+  const payload = list.map((t, i) => `<<<${i + 1}>>>${t}`).join('\n');
+  const { text: raw } = await chat(settings, [
+    { role: 'system', content: systemPrompt(settings) },
+    { role: 'user', content: payload }
+  ]);
+
+  let marked = parseMarked(raw, list.length);
+  const missing = [];
+  marked.forEach((v, i) => {
+    if (!v) missing.push(i);
+  });
+
+  if (missing.length === list.length) {
+    const lines = raw
+      .split('\n')
+      .map(s => s.replace(/^\s*(?:[-*•]|\d+[.、)])\s*/, '').trim())
+      .filter(Boolean);
+    if (lines.length === list.length) return lines;
+    throw new Error('模型没按编号格式返回，解析失败。换一个指令跟随更好的模型试试');
+  }
+
+  if (missing.length) {
+    for (const i of missing) {
+      try {
+        const { text: one } = await chat(settings, [
+          { role: 'system', content: systemPrompt(settings) },
+          { role: 'user', content: `<<<1>>>${list[i]}` }
+        ]);
+        const v = parseMarked(one, 1)[0];
+        if (v) marked[i] = v;
+      } catch (_) {
+        /* 单条失败就留空 */
+      }
+    }
+  }
+
+  return marked;
+}
+
+async function translateMany(texts, settings) {
+  const list = Array.isArray(texts) ? texts : [];
+  const out = new Array(list.length).fill('');
+  const cache = await loadCache();
+  const pending = [];
+
+  for (let i = 0; i < list.length; i++) {
+    const src = String(list[i] ?? '');
+    const trimmed = src.trim();
+    if (!trimmed) continue;
+    const key = cacheKey(settings, trimmed);
+    const hit = cache[key];
+    if (hit && typeof hit.v === 'string') {
+      out[i] = hit.v;
+      hit.t = Date.now();
+      continue;
+    }
+    pending.push({ i, src, key });
+  }
+
+  if (!pending.length) return out;
+
+  const chunks = [];
+  let cur = [];
+  let curLen = 0;
+  for (const p of pending) {
+    const len = p.src.length;
+    if (cur.length && (cur.length >= CHUNK_MAX_ITEMS || curLen + len > CHUNK_MAX_CHARS)) {
+      chunks.push(cur);
+      cur = [];
+      curLen = 0;
+    }
+    cur.push(p);
+    curLen += len;
+  }
+  if (cur.length) chunks.push(cur);
+
+  for (const chunk of chunks) {
+    const results = await translateChunk(chunk.map(p => p.src), settings);
+    for (let k = 0; k < chunk.length; k++) {
+      const tr = (results[k] || '').trim();
+      if (!tr) continue;
+      out[chunk[k].i] = tr;
+      if (tr !== chunk[k].src.trim()) {
+        cache[chunk[k].key] = { v: tr, t: Date.now() };
+      }
+    }
+    scheduleFlush();
+  }
+
+  return out;
+}
+
+/* ------------------------- 内容脚本按需注入 ------------------------- */
+
+/* 页面没加载完时内容脚本可能还没注入，或者用户刚刷新过页面。
+   这时 sendMessage 会抛「Receiving end does not exist」，表现就是「按了没反应」。
+   所以统一走这里：先 ping，不通就注入，再发。 */
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+async function pingTab(tabId) {
+  try {
+    const res = await chrome.tabs.sendMessage(tabId, { type: 'mxt:ping' });
+    // 老版本内容脚本不认 ping，但只要有监听器就算就绪
+    return { ready: true, info: res || null };
+  } catch (_) {
+    return { ready: false, info: null };
+  }
+}
+
+async function injectable(tabId) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    const url = String(tab?.url || '');
+    // chrome://、扩展商店、PDF 阅读器、about: 之类都不允许注入
+    return /^https?:/i.test(url);
+  } catch (_) {
+    return false;
+  }
+}
+
+async function injectContent(tabId, { allFrames = false } = {}) {
+  const target = { tabId };
+  if (allFrames) target.allFrames = true;
+  try {
+    await chrome.scripting.insertCSS({ target, files: ['content/content.css'] });
+  } catch (_) {
+    // 重复插入或页面受限，样式缺失不致命（Shadow DOM 里还有一份内联样式）
+  }
+  await chrome.scripting.executeScript({ target, files: ['content/content.js'] });
+}
+
+/* 页面里所有能注入的 frame（含 iframe 里的内容）。
+   论文站、网盘、播放器经常把正文放在 iframe 里，不翻它就等于没翻。 */
+async function frameTargets(tabId) {
+  try {
+    const p = chrome.webNavigation?.getAllFrames?.({ tabId });
+    if (!p) return [];
+    const timer = new Promise(res => setTimeout(() => res(null), 3000));
+    const frames = await Promise.race([p.catch(() => null), timer]);
+    if (Array.isArray(frames) && frames.length > 1) {
+      return frames.filter(f => f.frameId !== 0).map(f => ({ tabId, frameIds: [f.frameId] }));
+    }
+  } catch (_) {
+    /* 没有 webNavigation 权限就退回主 frame */
+  }
+  return [];
+}
+
+/* 给某个 frame 发消息（带超时：frame 卡住时不等它） */
+async function sendToFrame(tabId, frameId, message, timeoutMs = 8000) {
+  try {
+    const p = chrome.tabs.sendMessage(tabId, message, { frameId });
+    /* 超时后底层那个请求还是会 reject，必须吞掉，不然会变成未捕获错误 */
+    p.catch(() => {});
+    const timer = new Promise(res => setTimeout(() => res(null), timeoutMs));
+    return await Promise.race([p.catch(() => null), timer]);
+  } catch (_) {
+    return null;
+  }
+}
+
+/* 给所有 frame 发消息（主 frame 优先，失败再注入）。
+   逐个发、每个都有超时，避免某个卡住的 frame 把整次操作拖死。
+   注意：frame 那边可能有几十个（广告、追踪），这里不做成阻塞的。 */
+function sendToAllFrames(tabId, message, { inject = true } = {}) {
+  /* 主 frame 先发，别等 frame 列表 */
+  const main = sendToFrame(tabId, 0, message);
+  (async () => {
+    const targets = await frameTargets(tabId);
+    for (const t of targets) {
+      let r = await sendToFrame(tabId, t.frameIds[0], message, 4000);
+      if (r == null && inject) {
+        try {
+          await chrome.scripting.executeScript({ target: t, files: ['content/content.js'] });
+          await sendToFrame(tabId, t.frameIds[0], message, 4000);
+        } catch (_) {
+          /* 这个 frame 不让注入（跨域沙箱等），跳过 */
+        }
+      }
+    }
+  })();
+  return main;
+}
+
+/* 确保内容脚本在岗。返回 true 表示可以发消息了 */
+async function ensureContent(tabId, { retries = 3 } = {}) {
+  if (tabId == null) return false;
+
+  for (let i = 0; i < retries; i++) {
+    if ((await pingTab(tabId)).ready) return true;
+    if (!(await injectable(tabId))) return false;
+
+    try {
+      await injectContent(tabId);
+    } catch (_) {
+      /* 页面正在导航，或刚好被限制，等一下再试 */
+    }
+
+    if ((await pingTab(tabId)).ready) return true;
+    if (i < retries - 1) await sleep(250 * (i + 1));
+  }
+
+  return false;
+}
+
+/* 给标签页发消息，发不到就先注入再发一次 */
+async function sendToTab(tabId, message) {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch (_) {
+    /* 没人在听，下面注入后重试 */
+  }
+
+  if (!(await ensureContent(tabId))) {
+    throw new Error('这个页面不允许扩展运行（chrome:// 页面、扩展商店、PDF 阅读器都不行）');
+  }
+  return chrome.tabs.sendMessage(tabId, message);
+}
+
+/* 注入失败时给个工具栏反馈，总比静默没反应强 */
+async function flashBadge(tabId, text, title) {
+  try {
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: '#b91c1c' });
+    await chrome.action.setBadgeText({ tabId, text });
+    await chrome.action.setTitle({ tabId, title });
+    setTimeout(() => {
+      chrome.action.setBadgeText({ tabId, text: '' });
+      chrome.action.setTitle({ tabId, title: '译点' });
+    }, 4000);
+  } catch (_) {
+    /* 标签页已经关了 */
+  }
+}
+
+/* ------------------------- 事件绑定 ------------------------- */
+
+chrome.runtime.onInstalled.addListener(details => {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: 'mxt-selection',
+      title: '翻译「%s」',
+      contexts: ['selection']
+    });
+  });
+  if (details.reason === 'install') {
+    chrome.runtime.openOptionsPage();
+  }
+});
+
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
+  if (info.menuItemId !== 'mxt-selection' || !tab?.id) return;
+  try {
+    await sendToTab(tab.id, { type: 'mxt:translateSelection', text: info.selectionText || '' });
+  } catch (e) {
+    await flashBadge(tab.id, '!', e?.message || '注入失败');
+  }
+});
+
+/* 注入字幕脚本（视频字幕用），并让它跑起来 */
+async function runSubtitle(tabId) {
+  const target = { tabId };
+  try {
+    await chrome.scripting.executeScript({ target, files: ['content/subtitle.js'] });
+  } catch (_) {
+    /* 可能是受限页面 */
+  }
+  await sendToAllFrames(tabId, { type: 'mxt:translateSubs' });
+}
+
+/* 注入漫画翻译脚本，并翻当前这一页 */
+async function runComic(tabId) {
+  const target = { tabId };
+  try {
+    await chrome.scripting.executeScript({ target, files: ['content/comic.js'] });
+  } catch (_) {
+    /* 可能是受限页面 */
+  }
+  await sendToAllFrames(tabId, { type: 'mxt:translateComic' });
+}
+
+chrome.commands.onCommand.addListener(async command => {
+  if (!/^(toggle-page|toggle-page-full|toggle-display|toggle-subtitle)$/.test(command)) return;
+  const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  if (!tab?.id) return;
+
+  if (command === 'toggle-subtitle') {
+    try {
+      await runSubtitle(tab.id);
+    } catch (e) {
+      await flashBadge(tab.id, '!', e?.message || '字幕翻译失败');
+    }
+    return;
+  }
+
+  const message =
+    command === 'toggle-display'
+      ? { type: 'mxt:toggleDisplay' }
+      : { type: 'mxt:togglePage', mode: command === 'toggle-page-full' ? 'full' : 'smart' };
+
+  try {
+    if (command === 'toggle-page-full' || command === 'toggle-display') {
+      /* 整页和「仅译文」都要覆盖 iframe 里的内容 */
+      await sendToAllFrames(tab.id, message);
+    } else {
+      await sendToTab(tab.id, message);
+    }
+  } catch (e) {
+    await flashBadge(tab.id, '!', e?.message || '注入失败');
+  }
+});
+
+/* ------------------------- 语音识别（视频没字幕时） ------------------------- */
+
+/* 用 ASR 接口把音频转成带时间戳的字幕。
+   支持：
+     - OpenAI 兼容：POST {base}/audio/transcriptions（multipart，字段 model / file / response_format=verbose_json）
+     - Gemini：把音频当 inline_data 丢给 generateContent，让它输出带时间戳的字幕
+   返回 [{ start, end, text }] */
+async function transcribeAudio(audioBase64, mediaType, settings) {
+  const base = resolveBase(settings.baseURL);
+  if (!base) throw new Error('还没填接口地址，先去设置页填 Base URL');
+  const model = String(settings.asrModel || '').trim();
+  if (!model) throw new Error('还没填「语音识别模型」');
+
+  const order = protocolOrder(settings);
+  const errors = [];
+
+  /* 先试 OpenAI 兼容的 /audio/transcriptions */
+  for (const protocol of order) {
+    if (protocol !== 'openai') continue;
+    try {
+      const url = /\/audio\/transcriptions$/.test(base) ? base : base + '/audio/transcriptions';
+      const bin = Uint8Array.from(atob(audioBase64), c => c.charCodeAt(0));
+      const form = new FormData();
+      form.append('file', new Blob([bin], { type: mediaType || 'audio/webm' }), 'audio.webm');
+      form.append('model', model);
+      form.append('response_format', 'verbose_json');
+      const headers = {};
+      const key = String(settings.apiKey || '').trim();
+      if (key) headers.Authorization = 'Bearer ' + key;
+
+      const res = await fetch(url, { method: 'POST', headers, body: form });
+      const raw = await res.text();
+      if (!res.ok) {
+        const detail = (() => {
+          try {
+            const j = JSON.parse(raw);
+            return j?.error?.message || j?.message || raw.slice(0, 200);
+          } catch (_) {
+            return raw.slice(0, 200);
+          }
+        })();
+        const err = new Error(`接口 ${res.status}：${detail}`);
+        err.retryable = false;
+        throw err;
+      }
+      const json = JSON.parse(raw);
+      const cues = [];
+      const segs = json.segments || json.chunks || [];
+      if (Array.isArray(segs) && segs.length) {
+        for (const s of segs) {
+          const text = String(s.text || s.transcript || '').trim();
+          if (!text) continue;
+          cues.push({
+            start: Number(s.start || 0),
+            end: Number(s.end || (Number(s.start || 0) + 2)),
+            text
+          });
+        }
+      } else if (String(json.text || '').trim()) {
+        cues.push({ start: 0, end: 0, text: String(json.text).trim() });
+      }
+      if (cues.length) return { cues, protocol: 'openai' };
+      errors.push('OpenAI 兼容：返回里没有字幕内容');
+    } catch (e) {
+      errors.push(`OpenAI 兼容：${e?.message || e}`);
+      if (e?.retryable === false) break;
+    }
+  }
+
+  /* 再试 Gemini（把音频当多模态） */
+  for (const protocol of order) {
+    if (protocol !== 'gemini') continue;
+    try {
+      const root = base.replace(/\/models\/[^/]+$/i, '').replace(/\/(v1beta|v1)$/i, '');
+      const version = /\/v1$/i.test(base) && !/v1beta/i.test(base) ? 'v1' : 'v1beta';
+      const cleanModel = model.replace(/^models\//, '');
+      const url = `${root}/${version}/models/${encodeURIComponent(cleanModel)}:generateContent`;
+      const body = {
+        contents: [
+          {
+            role: 'user',
+            parts: [
+              {
+                text:
+                  'Transcribe the speech in this audio. ' +
+                  'Output JSON array: [{"start":seconds,"end":seconds,"text":"..."}]. ' +
+                  'Only output JSON.'
+              },
+              { inline_data: { mime_type: mediaType || 'audio/webm', data: audioBase64 } }
+            ]
+          }
+        ]
+      };
+      const headers = { 'Content-Type': 'application/json' };
+      const key = String(settings.apiKey || '').trim();
+      if (key) headers['x-goog-api-key'] = key;
+
+      const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      const raw = await res.text();
+      if (!res.ok) {
+        const err = new Error(`接口 ${res.status}：${raw.slice(0, 200)}`);
+        err.retryable = false;
+        throw err;
+      }
+      const json = JSON.parse(raw);
+      const text = extractText(json) || '';
+      const arr = parseAsrJson(text);
+      if (arr.length) return { cues: arr, protocol: 'gemini' };
+      errors.push('Gemini：返回里没解析出字幕');
+    } catch (e) {
+      errors.push(`Gemini：${e?.message || e}`);
+      if (e?.retryable === false) break;
+    }
+  }
+
+  if (errors.length === 1) throw new Error(errors[0]);
+  throw new Error('语音识别没成功：\n' + errors.join('\n'));
+}
+
+/* 模型可能返回 ```json 包着的数组 */
+function parseAsrJson(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return [];
+  const cands = [];
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) cands.push(fence[1].trim());
+  const first = s.indexOf('[');
+  const last = s.lastIndexOf(']');
+  if (first >= 0 && last > first) cands.push(s.slice(first, last + 1));
+  cands.push(s);
+  for (const c of cands) {
+    try {
+      const arr = JSON.parse(c);
+      if (!Array.isArray(arr)) continue;
+      return arr
+        .map(x => ({
+          start: Number(x.start ?? x.startTime ?? 0),
+          end: Number(x.end ?? x.endTime ?? 0),
+          text: String(x.text || x.transcript || '').trim()
+        }))
+        .filter(x => x.text);
+    } catch (_) {
+      /* 下一个 */
+    }
+  }
+  return [];
+}
+
+/* ------------------------- 图片翻译（漫画） ------------------------- */
+
+/* 让多模态模型看一张图，吐出里面的文字和译文。
+   返回 { items: [{ text, zh, box? }] }，box 是相对图片的百分比位置。 */
+async function translateImage(imageBase64, mediaType, settings, targetLang) {
+  const model = String(settings.visionModel || settings.model || '').trim();
+  if (!model) throw new Error('还没选模型');
+  const useModel = { ...settings, model };
+
+  const system =
+    '你是漫画/图片翻译助手。看图里的文字（对白、旁白、拟声词），' +
+    `把它们翻译成${targetLang}。只输出 JSON，格式：` +
+    '[{"text":"原文","zh":"译文","box":[左,上,右,下]}]。' +
+    'box 是文字在图里的位置，用 0-100 的百分比。没文字就输出 []。';
+
+  const messages = [
+    { role: 'system', content: system },
+    {
+      role: 'user',
+      content: [
+        { type: 'text', text: '翻译这张图里的所有文字。' },
+        { type: 'image', data: imageBase64, mediaType: mediaType || 'image/jpeg' }
+      ]
+    }
+  ];
+
+  const order = protocolOrder(useModel);
+  const errors = [];
+  for (const protocol of order) {
+    try {
+      const text = await callOnce(protocol, useModel, messages);
+      const parsed = parseImageJson(text);
+      if (parsed) return { items: parsed, protocol };
+      errors.push(`${PROTOCOL_LABEL[protocol]}：返回的不是 JSON`);
+    } catch (e) {
+      errors.push(`${PROTOCOL_LABEL[protocol]}：${e?.message || e}`);
+      if (e?.retryable === false) break;
+    }
+  }
+  if (errors.length === 1) throw new Error(errors[0]);
+  throw new Error('图片翻译没成功：\n' + errors.join('\n'));
+}
+
+/* 模型可能把 JSON 包在 ```json 里，或者前后带话 */
+function parseImageJson(raw) {
+  const s = String(raw || '').trim();
+  if (!s) return null;
+  const candidates = [];
+  const fence = s.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fence) candidates.push(fence[1].trim());
+  const first = s.indexOf('[');
+  const last = s.lastIndexOf(']');
+  if (first >= 0 && last > first) candidates.push(s.slice(first, last + 1));
+  candidates.push(s);
+  for (const c of candidates) {
+    try {
+      const arr = JSON.parse(c);
+      if (Array.isArray(arr)) {
+        return arr
+          .filter(x => x && (x.text || x.zh))
+          .map(x => ({
+            text: String(x.text || '').trim(),
+            zh: String(x.zh || x.text || '').trim(),
+            box: Array.isArray(x.box) && x.box.length === 4 ? x.box.map(Number) : null
+          }))
+          .filter(x => x.text || x.zh);
+      }
+    } catch (_) {
+      /* 试下一个 */
+    }
+  }
+  return null;
+}
+
+chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+  (async () => {
+    try {
+      if (!msg || typeof msg.type !== 'string') {
+        return sendResponse({ ok: false, error: '无法识别的消息' });
+      }
+
+      if (msg.type === 'mxt:getSettings') {
+        return sendResponse({ ok: true, settings: await getSettings() });
+      }
+
+      if (msg.type === 'mxt:translate') {
+        const settings = await getSettings();
+        if (!String(settings.baseURL || '').trim()) {
+          return sendResponse({ ok: false, error: '还没配置接口，点扩展图标 → 打开设置' });
+        }
+        const translations = await translateMany(msg.texts, settings);
+        return sendResponse({ ok: true, translations, model: settings.model });
+      }
+
+      if (msg.type === 'mxt:tabToggle') {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = msg.tabId ?? active?.id;
+        if (msg.mode === 'full') {
+          /* 整页：主 frame + 所有 iframe 都翻 */
+          await sendToAllFrames(tabId, { type: 'mxt:togglePage', mode: 'full' });
+        } else {
+          await sendToTab(tabId, { type: 'mxt:togglePage', mode: 'smart' });
+        }
+        return sendResponse({ ok: true });
+      }
+
+      if (msg.type === 'mxt:tabDisplay') {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = msg.tabId ?? active?.id;
+        await sendToAllFrames(tabId, { type: 'mxt:toggleDisplay' });
+        return sendResponse({ ok: true });
+      }
+
+      if (msg.type === 'mxt:tabSubtitle') {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = msg.tabId ?? active?.id;
+        await runSubtitle(tabId);
+        return sendResponse({ ok: true });
+      }
+
+      if (msg.type === 'mxt:tabComic') {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = msg.tabId ?? active?.id;
+        await runComic(tabId);
+        return sendResponse({ ok: true });
+      }
+
+      if (msg.type === 'mxt:transcribe') {
+        const settings = await getSettings();
+        if (!String(settings.baseURL || '').trim()) {
+          return sendResponse({ ok: false, error: '还没配置接口，点扩展图标 → 打开设置' });
+        }
+        try {
+          const r = await transcribeAudio(
+            String(msg.audio || ''),
+            String(msg.mediaType || 'audio/webm'),
+            settings
+          );
+          return sendResponse({ ok: true, cues: r.cues, protocol: r.protocol });
+        } catch (e) {
+          return sendResponse({ ok: false, error: e?.message || String(e) });
+        }
+      }
+
+      if (msg.type === 'mxt:translateImage') {
+        const settings = await getSettings();
+        if (!String(settings.baseURL || '').trim()) {
+          return sendResponse({ ok: false, error: '还没配置接口，点扩展图标 → 打开设置' });
+        }
+        try {
+          const r = await translateImage(
+            String(msg.image || ''),
+            String(msg.mediaType || 'image/jpeg'),
+            settings,
+            settings.targetLang || '简体中文'
+          );
+          return sendResponse({ ok: true, items: r.items, protocol: r.protocol });
+        } catch (e) {
+          return sendResponse({ ok: false, error: e?.message || String(e) });
+        }
+      }
+
+      if (msg.type === 'mxt:tabStatus') {
+        const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
+        const tabId = msg.tabId ?? active?.id;
+        if (!(await ensureContent(tabId))) {
+          return sendResponse({ ok: true, status: null, reason: '页面不允许扩展运行' });
+        }
+        const status = await chrome.tabs.sendMessage(tabId, { type: 'mxt:status' });
+        return sendResponse({ ok: true, status });
+      }
+
+      if (msg.type === 'mxt:version') {
+        return sendResponse({
+          ok: true,
+          version: chrome.runtime.getManifest().version,
+          features: ['models', 'probe', 'stream', 'detect', 'inject', 'smart', 'display']
+        });
+      }
+
+      if (msg.type === 'mxt:detect') {
+        return sendResponse({ ok: true, ...describeEndpoint({ baseURL: msg.baseURL }) });
+      }
+
+      if (msg.type === 'mxt:probe') {
+        const settings = { ...DEFAULTS, ...(msg.settings || {}) };
+        const result = await probeModel(settings, { model: msg.model, timeoutMs: msg.timeoutMs });
+        return sendResponse({ ok: true, ...result });
+      }
+
+      if (msg.type === 'mxt:models') {
+        const settings = { ...DEFAULTS, ...(msg.settings || {}) };
+        const info = await fetchModels(settings);
+        return sendResponse({ ok: true, ...info });
+      }
+
+      if (msg.type === 'mxt:test') {
+        const settings = { ...DEFAULTS, ...(msg.settings || {}) };
+        const { text, protocol } = await chat(settings, [
+          { role: 'system', content: '你是翻译引擎，只输出译文，不要解释。' },
+          { role: 'user', content: 'Hello, world.' }
+        ]);
+        return sendResponse({
+          ok: true,
+          sample: text.slice(0, 120),
+          protocol,
+          protocolLabel: PROTOCOL_LABEL[protocol]
+        });
+      }
+
+      if (msg.type === 'mxt:clearCache') {
+        memCache = null;
+        await chrome.storage.local.remove(['cache', 'protocolHints']);
+        protocolHints = null;
+        return sendResponse({ ok: true });
+      }
+
+      return sendResponse({ ok: false, error: '未知消息类型：' + msg.type });
+    } catch (e) {
+      return sendResponse({ ok: false, error: e?.message || String(e) });
+    }
+  })();
+  return true;
+});
+
+/* ------------------------- 流式端口 ------------------------- */
+
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name !== 'mxt-stream') return;
+
+  let alive = true;
+  port.onDisconnect.addListener(() => {
+    alive = false;
+  });
+
+  const reply = obj => {
+    if (!alive) return;
+    try {
+      port.postMessage(obj);
+    } catch (_) {
+      alive = false;
+    }
+  };
+
+  port.onMessage.addListener(async msg => {
+    if (!msg || msg.type !== 'stream') return;
+
+    try {
+      const settings = await getSettings();
+      if (!String(settings.baseURL || '').trim()) {
+        throw new Error('还没配置接口，点扩展图标 → 打开设置');
+      }
+
+      const list = Array.isArray(msg.texts) ? msg.texts : [];
+
+      /* ---- 单段：直接流式吐给卡片 ---- */
+      if (msg.mode === 'single') {
+        const src = String(list[0] ?? '');
+        const trimmed = src.trim();
+        if (!trimmed) return reply({ type: 'done', translation: '' });
+
+        const cache = await loadCache();
+        const ck = cacheKey(settings, trimmed);
+        const hit = cache[ck];
+        if (hit && typeof hit.v === 'string') {
+          reply({ type: 'delta', text: hit.v });
+          return reply({ type: 'done', translation: hit.v, cached: true });
+        }
+
+        const { text, protocol } = await chatStream(
+          settings,
+          [
+            { role: 'system', content: systemPromptSingle(settings) },
+            { role: 'user', content: trimmed }
+          ],
+          delta => reply({ type: 'delta', text: delta })
+        );
+
+        const clean = stripMarkers(text) || trimmed;
+        cache[ck] = { v: clean, t: Date.now() };
+        scheduleFlush();
+        return reply({ type: 'done', translation: clean, protocol });
+      }
+
+      /* ---- 整批：命中缓存的段落先吐出去，其余交给模型 ---- */
+      const cache = await loadCache();
+      const cachedLines = [];
+      const pending = [];
+
+      list.forEach((raw, i) => {
+        const src = String(raw ?? '').trim();
+        if (!src) return;
+        const ck = cacheKey(settings, src);
+        const hit = cache[ck];
+        if (hit && typeof hit.v === 'string') cachedLines.push({ i, v: hit.v, ck, src });
+        else pending.push({ i, src, ck });
+      });
+
+      cachedLines.sort((a, b) => a.i - b.i);
+      const cachedBlock = cachedLines.map(x => `<<<${x.i + 1}>>>${x.v}`).join('\n');
+
+      if (!pending.length) {
+        if (cachedBlock) reply({ type: 'delta', text: cachedBlock });
+        return reply({ type: 'done', raw: cachedBlock, cached: true });
+      }
+
+      if (cachedBlock) reply({ type: 'delta', text: cachedBlock + '\n' });
+
+      const payload = pending.map(p => `<<<${p.i + 1}>>>${p.src}`).join('\n');
+      const { text, protocol } = await chatStream(
+        settings,
+        [
+          { role: 'system', content: systemPrompt(settings) },
+          { role: 'user', content: payload }
+        ],
+        delta => reply({ type: 'delta', text: delta })
+      );
+
+      const merged = cachedBlock ? cachedBlock + '\n' + text : text;
+      reply({ type: 'done', raw: merged, protocol });
+
+      parseMarked(text, list.length).forEach((v, i) => {
+        if (!v) return;
+        const src = String(list[i] ?? '').trim();
+        if (!src || v === src) return;
+        cache[cacheKey(settings, src)] = { v, t: Date.now() };
+      });
+      scheduleFlush();
+    } catch (e) {
+      reply({ type: 'error', error: e?.message || String(e) });
+    }
+  });
+});

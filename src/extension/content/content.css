@@ -1,0 +1,105 @@
+/* 注入到页面里的译文样式
+   全部带 !important，防止被站点 CSS 覆盖 */
+
+.mxt-trans {
+  display: block !important;
+  margin: 0.35em 0 0.2em !important;
+  padding: 0 0 0 0.7em !important;
+  border-left: 2px solid rgba(59, 130, 246, 0.5) !important;
+  color: inherit !important;
+  opacity: 0.92 !important;
+  font-size: 0.97em !important;
+  line-height: 1.7 !important;
+  font-style: normal !important;
+  text-align: inherit !important;
+  background: transparent !important;
+  text-indent: 0 !important;
+  letter-spacing: normal !important;
+  word-break: normal !important;
+  overflow-wrap: break-word !important;
+  white-space: normal !important;
+  float: none !important;
+  position: static !important;
+  text-decoration: none !important;
+  text-transform: none !important;
+}
+
+/* 译文插在链接/行内容器里时，别继承链接的下划线和高亮配色 */
+a > .mxt-trans,
+span > .mxt-trans,
+strong > .mxt-trans,
+em > .mxt-trans,
+b > .mxt-trans,
+i > .mxt-trans,
+small > .mxt-trans,
+time > .mxt-trans {
+  color: inherit !important;
+  font-weight: inherit !important;
+  text-decoration: none !important;
+}
+
+/* 表格单元格里不要撑坏布局 */
+td > .mxt-trans,
+th > .mxt-trans {
+  margin-top: 0.25em !important;
+  border-left-width: 0 !important;
+  padding-left: 0 !important;
+  font-size: 0.94em !important;
+  opacity: 0.85 !important;
+}
+
+/* 标题的译文小一号，避免压过原文层级 */
+h1 > .mxt-trans,
+h2 > .mxt-trans,
+h3 > .mxt-trans,
+h4 > .mxt-trans,
+h5 > .mxt-trans,
+h6 > .mxt-trans {
+  font-size: 0.78em !important;
+  font-weight: 400 !important;
+}
+
+/* 列表项内部缩进对齐 */
+li > .mxt-trans {
+  margin-top: 0.2em !important;
+}
+
+/* 「仅译文」模式：原文透明、译文可见
+   用 -webkit-text-fill-color 而不是 color，这样 color 仍能正常继承给节点里的
+   行内元素（链接、加粗），译文不会被一起弄成透明 */
+body.mxt-only-trans .mxt-orig:not(.mxt-swapped) {
+  -webkit-text-fill-color: transparent !important;
+  text-shadow: none !important;
+}
+/* 整段式的原文直接让位，译文落在原文的位置上，不留一片白。
+   带图片/视频的容器不标 data-mxt-out（见 content.js），继续用上面的透明方案。 */
+body.mxt-only-trans .mxt-orig[data-mxt-out]:not(.mxt-swapped) {
+  display: none !important;
+}
+/* 原地换字（mxt-swapped）时，原本要插在旁边的译文节点就藏起来 */
+.mxt-trans.mxt-hidden {
+  display: none !important;
+}
+/* 仅译文模式下译文就是正文，不用再「标出来」：去掉竖线、缩进和缩小字号 */
+body.mxt-only-trans .mxt-trans {
+  border-left-color: transparent !important;
+  padding-left: 0 !important;
+  font-size: inherit !important;
+  opacity: 1 !important;
+}
+body.mxt-only-trans .mxt-orig img,
+body.mxt-only-trans .mxt-orig video,
+body.mxt-only-trans .mxt-orig svg,
+body.mxt-only-trans .mxt-orig canvas {
+  -webkit-text-fill-color: initial !important;
+  visibility: visible !important;
+}
+body.mxt-only-trans .mxt-orig .mxt-trans,
+body.mxt-only-trans .mxt-trans {
+  -webkit-text-fill-color: currentColor !important;
+}
+
+/* 只是想临时藏起译文（保留原文）——给控制台/以后的功能用 */
+body.mxt-hide-trans .mxt-trans {
+  display: none !important;
+}

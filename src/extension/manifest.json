@@ -1,0 +1,72 @@
+{
+  "manifest_version": 3,
+  "name": "译点 · 自建 AI 翻译",
+  "version": "1.7.7",
+  "description": "划词翻译 + 整页双语对照，直连自己的 OpenAI 兼容接口。无订阅、无额度限制。",
+  "minimum_chrome_version": "110",
+  "permissions": [
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "scripting",
+    "webNavigation"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_title": "译点",
+    "default_icon": {
+      "16": "icons/16.png",
+      "48": "icons/48.png",
+      "128": "icons/128.png"
+    }
+  },
+  "icons": {
+    "16": "icons/16.png",
+    "48": "icons/48.png",
+    "128": "icons/128.png"
+  },
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content.js"],
+      "css": ["content/content.css"],
+      "run_at": "document_end",
+      "all_frames": false
+    }
+  ],  "commands": {
+    "toggle-page": {
+      "suggested_key": {
+        "default": "Alt+T"
+      },
+      "description": "翻译正文 / 还原（智能识别主内容区域）"
+    },
+    "toggle-page-full": {
+      "suggested_key": {
+        "default": "Alt+W"
+      },
+      "description": "翻译整页（含导航、侧边栏、页脚）"
+    },
+    "toggle-display": {
+      "suggested_key": {
+        "default": "Alt+Y"
+      },
+      "description": "在「双语对照」和「仅译文」之间切换"
+    },
+    "toggle-subtitle": {
+      "suggested_key": {
+        "default": "Alt+S"
+      },
+      "description": "翻译视频字幕（双语字幕）"
+    }
+  }
+}
