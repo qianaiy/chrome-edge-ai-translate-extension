@@ -62,15 +62,42 @@ async function api(path, opts = {}) {
 }
 
 async function main() {
-  /* ---- 1. 先确认 token 有没有写权限，别推了半天才失败 ---- */
+  /* ---- 1. 先确认 token 有没有写权限，别推了半天才失败 ----
+     探针走一条专门的临时分支，绝不碰 main —— 否则每次跑都会在 main 上
+     留下两个「probe / remove probe」提交，把 main 的历史弄脏。 */
+  const PROBE_BRANCH = 'mxt-push-probe';
   console.log('检查 token 写权限 …');
+
+  const baseRef = await api('/git/ref/heads/main');
+  const baseSha = baseRef.ok ? baseRef.json.object.sha : null;
+  if (!baseSha) {
+    console.error('  ✗ 读不到 main 分支，无法建立探针分支');
+    process.exit(1);
+  }
+
+  /* 删掉可能残留的旧探针分支 */
+  await api(`/git/refs/heads/${PROBE_BRANCH}`, {
+    method: 'DELETE',
+    headers: { 'Content-Type': 'application/json' }
+  });
+
+  const mkBranch = await api('/git/refs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref: `refs/heads/${PROBE_BRANCH}`, sha: baseSha })
+  });
+  if (!mkBranch.ok) {
+    console.error(`  ✗ 建探针分支失败：${mkBranch.json?.message || mkBranch.text}`);
+    process.exit(1);
+  }
+
   const probe = await api('/contents/.push-probe', {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       message: 'probe',
       content: Buffer.from('probe', 'utf8').toString('base64'),
-      branch: 'main'
+      branch: PROBE_BRANCH
     })
   });
 
@@ -87,23 +114,24 @@ async function main() {
     console.error('    经典 PAT（ghp_ 开头）：勾选 repo 权限');
     console.error('');
     console.error('  注意：令牌创建后可能需要等一两分钟才生效。');
+    /* 清理探针分支再退出 */
+    await api(`/git/refs/heads/${PROBE_BRANCH}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }
+    });
     process.exit(1);
   }
   console.log('  ✓ token 有写权限');
 
-  /* ---- 2. 删掉探针 ---- */
+  /* ---- 2. 删掉探针分支（main 始终没被动过） ---- */
   try {
-    const got = await api('/contents/.push-probe');
-    if (got.ok) {
-      await api('/contents/.push-probe', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: 'remove probe', sha: got.json.sha, branch: 'main' })
-      });
-      console.log('  ✓ 探针已清理');
-    }
+    await api(`/git/refs/heads/${PROBE_BRANCH}`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    console.log('  ✓ 探针分支已清理');
   } catch {
-    console.log('  ! 探针未能清理，稍后请手动删除 .push-probe');
+    console.log(`  ! 探针分支未能清理，请手动删除 ${PROBE_BRANCH}`);
   }
 
   /* ---- 3. 推送（这条链路时好时坏，重试几次） ---- */
