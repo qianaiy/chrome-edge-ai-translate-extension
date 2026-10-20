@@ -80,16 +80,24 @@ async function init() {
   $('model').textContent = settings.model;
   $('lang').value = settings.targetLang;
 
-  const configured = String(settings.baseURL || '').trim() && String(settings.apiKey || '').trim();
+  /* 配置检查要和后台一致：后台只要求 Base URL（本地服务可以不带 Key）。
+     远程服务缺 Key 时才提示，否则本地模型用户会被误报成「没配好」。 */
+  const hasBase = !!String(settings.baseURL || '').trim();
+  const hasKey = !!String(settings.apiKey || '').trim();
+  const det = hasBase
+    ? await chrome.runtime.sendMessage({ type: 'mxt:detect', baseURL: settings.baseURL }).catch(() => null)
+    : null;
+  resolvedBase = det?.baseURL || settings.baseURL;
+
+  const localEndpoint = ['ollama', 'lmstudio', 'local'].includes(det?.providerId);
+  const configured = hasBase && (hasKey || localEndpoint);
+
   if (!configured) {
-    status.innerHTML =
-      '<span style="color:#b45309">还没配好接口。点下面的「设置」填 Base URL 和 API Key。</span>';
+    status.innerHTML = hasBase
+      ? '<span style="color:#b45309">还没填 API Key。点下面的「设置」填一下（本地服务可以不填）。</span>'
+      : '<span style="color:#b45309">还没配好接口。点下面的「设置」填 Base URL 和 API Key。</span>';
     $('speed').textContent = '配好接口后可以测速。';
   } else {
-    const det = await chrome.runtime
-      .sendMessage({ type: 'mxt:detect', baseURL: settings.baseURL })
-      .catch(() => null);
-    resolvedBase = det?.baseURL || settings.baseURL;
     const where = det?.providerName || '自定义接口';
     status.textContent = `${where} · ${settings.model || '未选模型'}`;
     await loadSpeed(resolvedBase);
