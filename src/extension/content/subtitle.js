@@ -310,6 +310,7 @@
     /* 一次最多 60 条，太多就分批 */
     const CHUNK = 60;
     const out = [];
+    let failed = 0;
     for (let i = 0; i < cues.length; i += CHUNK) {
       const part = cues.slice(i, i + CHUNK);
       const texts = part.map(c => c.text);
@@ -321,11 +322,21 @@
       }
       const list = res && res.ok && Array.isArray(res.translations) ? res.translations : [];
       part.forEach((c, j) => {
-        out.push({ ...c, zh: String(list[j] || '').trim() || c.text });
+        const zh = String(list[j] || '').trim();
+        if (zh) {
+          out.push({ ...c, zh });
+        } else {
+          /* 没翻出来就留空，不要拿原文冒充译文 ——
+             那样用户看到「双语字幕」里两行一样的内容，以为没翻成功又不知道差在哪。 */
+          failed++;
+          out.push({ ...c, zh: '', failed: true });
+        }
       });
       /* 让出一帧，别把页面卡住 */
       await new Promise(r => setTimeout(r, 0));
     }
+    /* 告诉调用方有几条没翻成，界面上要说明 */
+    if (failed) out.failedCount = failed;
     return out;
   }
 
@@ -367,6 +378,8 @@
       .mxt-sub-time { color: #9aa0a6; font-size: 11px; font-variant-numeric: tabular-nums; }
       .mxt-sub-orig { color: #cfd3d8; }
       .mxt-sub-zh { color: #fff; }
+      .mxt-sub-failed { color: #f28b82; font-style: italic; }
+      .mxt-sub-row-failed { opacity: .7; }
       .mxt-sub-empty { padding: 12px 10px; color: #9aa0a6; }
     `;
     const shadow = host.attachShadow({ mode: 'open' });
@@ -402,9 +415,17 @@
       return;
     }
     title.textContent = `字幕（${cues.length} 条）`;
+    const failed = cues.filter(c => c.failed).length;
+    if (failed) {
+      const note = document.createElement('div');
+      note.className = 'mxt-sub-empty';
+      note.textContent = `有 ${failed} 条没翻出来（接口失败或返回为空），这些只显示原文`;
+      list.appendChild(note);
+    }
     for (const c of cues) {
       const row = document.createElement('div');
       row.className = 'mxt-sub-row';
+      if (c.failed) row.classList.add('mxt-sub-row-failed');
       const time = document.createElement('div');
       time.className = 'mxt-sub-time';
       time.textContent = fmtTime(c.start);
@@ -413,7 +434,12 @@
       orig.textContent = c.text;
       const zh = document.createElement('div');
       zh.className = 'mxt-sub-zh';
-      zh.textContent = c.zh || '';
+      if (c.failed) {
+        zh.textContent = '（没翻出来）';
+        zh.classList.add('mxt-sub-failed');
+      } else {
+        zh.textContent = c.zh || '';
+      }
       row.append(time, orig, zh);
       row.addEventListener('click', () => {
         try {
@@ -504,10 +530,11 @@
 
   /* 把双语字幕塞进播放器（浏览器会显示成原生字幕） */
   function attachTrack(video, cues) {
+    let url = null;
     try {
-      const vtt = toVtt(cues, c => `${c.text}\n${c.zh || ''}`);
+      const vtt = toVtt(cues, c => (c.failed ? c.text : `${c.text}\n${c.zh || ''}`));
       const blob = new Blob([vtt], { type: 'text/vtt' });
-      const url = URL.createObjectURL(blob);
+      url = URL.createObjectURL(blob);
       const track = document.createElement('track');
       track.kind = 'subtitles';
       track.label = '中文（译点）';
@@ -518,8 +545,27 @@
       if (video.textTracks && video.textTracks.length) {
         for (const t of video.textTracks) t.mode = 'showing';
       }
+      /* 记住这条轨道，下次重翻之前先撤掉。
+         不撤的话会一条叠一条，播放器里出现好几份字幕轨。 */
+      const prev = video.__mxtTrack;
+      if (prev && prev.parentNode) {
+        prev.parentNode.removeChild(prev);
+        if (prev.__mxtUrl) URL.revokeObjectURL(prev.__mxtUrl);
+      }
+      track.__mxtUrl = url;
+      video.__mxtTrack = track;
+      url = null; // 所有权交给 track，别在这里释放
     } catch (_) {
       /* 塞不进去就算了，列表里也能看 */
+    } finally {
+      /* 上面抛错的话，这个 url 就没人管了，必须释放 */
+      if (url) {
+        try {
+          URL.revokeObjectURL(url);
+        } catch (_) {
+          /* 忽略 */
+        }
+      }
     }
   }
 
