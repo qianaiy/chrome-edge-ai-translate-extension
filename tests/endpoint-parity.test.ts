@@ -1,111 +1,62 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { checkEndpoint, isLocalHost, redirectWarning, sameOrigin } from '../src/core/endpoint.js';
+import * as Core from '../src/core/core.js';
 
 /**
- * 扩展是普通 JS，不能 import TS 核心，所以两边各有一份实现。
- * 这个测试把 background.js 里那段实现抠出来，和核心库跑同一批输入比对 ——
- * 一旦有人只改了一边，这里就会炸。
+ * 共享核心的「接线」测试。
+ *
+ * 这个文件以前叫「扩展与核心一致」：把 background.js 里的复制品抠出来，
+ * 和核心库跑同一批输入比对。那是在给一份不该存在的副本做体检 ——
+ * 两份都改对了才算过，改对一份就炸，成本全花在维护重复本身上。
+ *
+ * 现在地址策略只有一份实现（src/core/endpoint.ts → 构建成 core.js），
+ * 服务工作者启动时用 importScripts 加载。要守的东西变成「接线别断」：
+ *   1. 后台脚本确实加载 core.js
+ *   2. 后台脚本里不再有本地实现
+ *   3. 后台从 MXTCore 取的名字，核心库真的导出
+ *   4. 加载失败时明确报错，而不是悄悄退回一份自己的实现
  */
-function loadExtensionEndpoint() {
-  const src = readFileSync(join(process.cwd(), 'src', 'extension', 'background.js'), 'utf8');
+const BG = readFileSync(join(process.cwd(), 'src', 'extension', 'background.js'), 'utf8');
 
-  const start = src.indexOf('/* ---------------------- 地址信任边界');
-  expect(start, 'background.js 里应该有「地址信任边界」小节').toBeGreaterThan(-1);
+const DELEGATED = ['checkEndpoint', 'isLocalHost', 'sameOrigin', 'redirectWarning'];
 
-  const end = src.indexOf('function sameOrigin(', start);
-  expect(end, '地址信任边界小节应该以 sameOrigin 结束').toBeGreaterThan(start);
+describe('后台脚本加载共享核心', () => {
+  it('启动时 importScripts(core.js)', () => {
+    expect(BG).toContain("importScripts('core.js')");
+  });
 
-  const block = src.slice(start, end);
-  const factory = new Function(`${block}\nreturn { checkEndpoint, isLocalHost };`);
-  return factory() as {
-    checkEndpoint: typeof checkEndpoint;
-    isLocalHost: typeof isLocalHost;
-  };
-}
+  it('加载失败时明确报错', () => {
+    expect(BG).toContain('共享核心 core.js 没有加载');
+  });
 
-const ext = loadExtensionEndpoint();
-
-const HOSTS = [
-  'localhost',
-  'LOCALHOST',
-  'app.localhost',
-  'localhost.evil.com',
-  'evil-localhost',
-  '127.0.0.1',
-  '127.0.0.1.evil.com',
-  '127.1.2.3',
-  '127.255.255.254',
-  '::1',
-  '[::1]',
-  '0:0:0:0:0:0:0:1',
-  '::ffff:127.0.0.1',
-  '10.0.0.1',
-  '192.168.1.50',
-  '172.16.0.1',
-  '172.31.255.255',
-  '172.32.0.1',
-  '172.15.0.1',
-  '8.8.8.8',
-  '256.1.1.1',
-  'api.deepseek.com',
-  '',
-  '   '
-];
-
-const URLS = [
-  '',
-  '   ',
-  'api.example.com/v1',
-  'javascript:alert(1)',
-  'data:text/html,x',
-  'file:///c:/x',
-  'ftp://example.com',
-  'https://api.deepseek.com/v1',
-  'https://api.deepseek.com/v1/',
-  'http://api.deepseek.com/v1',
-  'http://localhost:11434',
-  'http://127.0.0.1:1234',
-  'http://[::1]:11434',
-  'http://192.168.1.50:1234',
-  'http://10.1.2.3:8000',
-  'http://172.16.0.9:8000',
-  'http://172.32.0.9:8000',
-  'https://localhost:8443',
-  'http://LOCALHOST:11434',
-  'https://user:pass@api.example.com/v1',
-  'https://user@api.example.com/v1',
-  'http://user:pass@127.0.0.1:8000'
-];
-
-describe('isLocalHost：扩展与核心一致', () => {
-  it('每个主机名的判定都相同', () => {
-    for (const host of HOSTS) {
-      expect(ext.isLocalHost(host), `host=${JSON.stringify(host)}`).toBe(isLocalHost(host));
+  it('地址策略没有留下本地实现', () => {
+    for (const name of DELEGATED) {
+      expect(BG, `background.js 不该自己定义 ${name}`).not.toMatch(new RegExp(`function\\s+${name}\\s*\\(`));
     }
+  });
+
+  it('从 MXTCore 解构，并逐个校验是否存在', () => {
+    expect(BG).toMatch(/const\s*\{\s*checkEndpoint[^}]*\}\s*=\s*MXT_CORE/);
+    /* 解构拿到 undefined 时要立刻报出可操作的错误，否则表现是调用时
+       「checkEndpoint is not a function」，看不出是没重新构建 */
+    expect(BG).toContain('共享核心缺少');
   });
 });
 
-describe('checkEndpoint：扩展与核心一致', () => {
-  it('每个地址的判定、问题类型、提示语都相同', () => {
-    for (const url of URLS) {
-      const a = checkEndpoint(url);
-      const b = ext.checkEndpoint(url);
-      expect(b.ok, `url=${JSON.stringify(url)}`).toBe(a.ok);
-      expect(b.problem, `url=${JSON.stringify(url)}`).toBe(a.problem);
-      expect(b.message, `url=${JSON.stringify(url)}`).toBe(a.message);
-      expect(b.url, `url=${JSON.stringify(url)}`).toBe(a.url);
-      expect(b.local, `url=${JSON.stringify(url)}`).toBe(a.local);
+describe('核心库真的导出这些能力', () => {
+  it('四个地址策略函数都在 core.ts 的导出里', () => {
+    for (const name of DELEGATED) {
+      expect(typeof (Core as unknown as Record<string, unknown>)[name], `core 缺少 ${name}`).toBe(
+        'function'
+      );
     }
   });
-});
 
-describe('重定向判定的语义', () => {
-  it('同源不报警，跨源报警', () => {
-    expect(redirectWarning('https://a.com/x', 'https://a.com/y')).toBeNull();
-    expect(sameOrigin('https://a.com/x', 'https://a.com/y')).toBe(true);
-    expect(redirectWarning('https://a.com/x', 'https://evil.net/x')).not.toBeNull();
-    expect(sameOrigin('https://a.com/x', 'https://evil.net/x')).toBe(false);
+  it('重定向判定的语义', () => {
+    expect(Core.sameOrigin('https://a.com/x', 'https://a.com/y')).toBe(true);
+    expect(Core.redirectWarning('https://a.com/x', 'https://a.com/y')).toBeNull();
+    expect(Core.sameOrigin('https://a.com/x', 'https://evil.net/x')).toBe(false);
+    expect(Core.redirectWarning('https://a.com/x', 'https://evil.net/x')).not.toBeNull();
   });
 });

@@ -1,5 +1,19 @@
 'use strict';
 
+/* 共享核心：构建时把 src/core/*.ts 打成 core.js（IIFE，挂全局 MXTCore），
+   服务工作者在启动时同步加载它。
+
+   在它之前，core.js 只是「测试用的事实来源」—— 运行时根本没有东西加载，
+   真正的实现是下面每个函数各一份复制品。名不副实，而且漂移只能靠测试发现。 */
+if (typeof importScripts === 'function') importScripts('core.js');
+
+const MXT_CORE = typeof MXTCore === 'undefined' ? null : MXTCore;
+if (!MXT_CORE) {
+  /* 不要在这里退化成本地实现：那样「共享核心」又变回一句空话，
+     而且会静默跑起一份和测试不同的代码。宁可明确地失败。 */
+  throw new Error('共享核心 core.js 没有加载，请重新构建（npm run build）后再加载扩展');
+}
+
 /* ------------------------------------------------------------------ *
  * 译点 · 自建 AI 翻译
  * 后台：配置管理、协议自动识别、调用模型、翻译缓存
@@ -989,97 +1003,18 @@ function isLocalEndpoint(baseURL) {
 
 /* ---------------------- 地址信任边界 ---------------------- */
 
-/* 和 src/core/endpoint.ts 保持同一套规则（有测试比对两边）。
-   这个地址是扩展唯一主动发请求出去的地方，填错或被改掉，Key 和网页正文
-   都会发到那个地址上，所以发请求前必须再验一次。 */
-const PRIVATE_V4 = [/^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2\d|3[01])\./];
-const V4_RE = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/;
+/* 实现只在 src/core/endpoint.ts 里。构建时打成 core.js，服务工作者启动时
+   用 importScripts 加载（见文件顶部），这里只是取出来用。
 
-function isPrivateV4(host) {
-  const m = String(host || '').match(V4_RE);
-  if (!m) return false;
-  const octets = m.slice(1).map(Number);
-  if (octets.some(o => o > 255)) return false;
-  return PRIVATE_V4.some(re => re.test(host));
-}
+   以前这里还有一整份复制品，靠 tests/endpoint-parity.test.ts 比对两边 ——
+   那是笔明账：每加一条规则要改两遍、再补一条一致性测试；而漏改的代价是
+   「设置页放行了、后台没放行」这种看不见的分叉。 */
+const { checkEndpoint, isLocalHost, sameOrigin, redirectWarning } = MXT_CORE;
 
-function isLocalHost(hostname) {
-  const raw = String(hostname || '').trim().toLowerCase();
-  if (!raw) return false;
-  const h = raw.replace(/^\[/, '').replace(/\]$/, '');
-  if (!h) return false;
-  if (h === 'localhost' || h.endsWith('.localhost')) return true;
-  if (h === '::1') return true;
-  if (h === '0:0:0:0:0:0:0:1') return true;
-  const mapped = h.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/);
-  return isPrivateV4(mapped ? mapped[1] : h);
-}
-
-function checkEndpoint(rawURL) {
-  const url = String(rawURL || '').trim().replace(/\/+$/, '');
-  if (!url) {
-    return { ok: false, problem: 'empty', message: '还没有填翻译服务地址', url: '', local: false };
+for (const name of ['checkEndpoint', 'isLocalHost', 'sameOrigin', 'redirectWarning']) {
+  if (typeof MXT_CORE[name] !== 'function') {
+    throw new Error(`共享核心缺少 ${name}，请重新构建（npm run build）`);
   }
-  let u;
-  try {
-    u = new URL(url);
-  } catch (_) {
-    return {
-      ok: false,
-      problem: 'malformed',
-      message: '地址格式不对，应该像 https://api.example.com/v1 这样',
-      url: '',
-      local: false
-    };
-  }
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-    return { ok: false, problem: 'not-http', message: '地址必须以 http:// 或 https:// 开头', url: '', local: false };
-  }
-  const local = isLocalHost(u.hostname);
-  if (u.username || u.password) {
-    return {
-      ok: false,
-      problem: 'credentials-in-url',
-      message:
-        '不要把 Key 写进地址：带凭证的 URL 会进浏览器历史、代理日志和崩溃报告。请把它填到 API Key 输入框。',
-      url: '',
-      local
-    };
-  }
-  if (u.protocol === 'http:' && !local) {
-    return {
-      ok: false,
-      problem: 'insecure-remote',
-      message: `远程地址必须用 https://，否则 API Key 和网页内容都是明文传输（${u.hostname} 不是本机或局域网地址）`,
-      url: '',
-      local
-    };
-  }
-  return { ok: true, problem: null, message: null, url, local };
-}
-
-function sameOrigin(a, b) {
-  let ua;
-  let ub;
-  try {
-    ua = new URL(String(a || ''));
-    ub = new URL(String(b || ''));
-  } catch (_) {
-    return false;
-  }
-  return ua.origin === ub.origin;
-}
-
-function redirectWarning(requestURL, finalURL) {
-  if (!finalURL) return null;
-  if (sameOrigin(requestURL, finalURL)) return null;
-  let host = finalURL;
-  try {
-    host = new URL(finalURL).origin;
-  } catch (_) {
-    /* 用原始字符串 */
-  }
-  return `翻译服务的地址被重定向到了别的站点（${host}），出于安全考虑这次结果已丢弃。请检查服务地址是否被劫持或写错。`;
 }
 
 /** 发请求前的最后一道闸：地址不可信就直接停，不要等到 Key 已经发出去 */

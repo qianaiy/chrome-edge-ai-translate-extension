@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import * as Core from '../../src/core/core.js';
 
 /**
  * 在 Node 里加载 src/extension/background.js，用于验证扩展真实的运行时行为。
@@ -141,6 +142,11 @@ export async function loadBackground(opts: LoadOptions = {}): Promise<Background
       resolveBase, detectProvider, guessProtocol, protocolOrder,
       configProblem, isLocalEndpoint, redactSecrets, listModelsOnce
     }; })();`;
+
+  /* 浏览器里服务工作者用 importScripts('core.js') 把共享核心挂到全局；
+     Node 里没有这个 API，所以直接把同一份源码挂上去，效果等价。
+     这样测试跑的就是「后台真的调用共享核心」的路径，而不是一份副本。 */
+  (globalThis as unknown as { MXTCore: unknown }).MXTCore = Core;
 
   const fn = new Function('chrome', 'fetch', 'console', wrapped);
   const fns = fn(chrome, fetchSpy, console) as Record<string, any>;

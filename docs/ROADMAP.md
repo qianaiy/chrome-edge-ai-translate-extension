@@ -34,7 +34,9 @@
 
 ### 主线三：架构收敛（P2）
 
-- [ ] **TS 核心成为唯一事实来源**，扩展层只留浏览器相关代码
+- [~] **TS 核心成为唯一事实来源** —— 第四轮完成第一步：服务工作者真的 `importScripts('core.js')` 了
+  （在此之前 core.js 只给测试用、运行时根本没加载），地址策略已收归核心，`background.js` 里那份副本删了。
+  **尚未做**：协议构造、提示词与标记、术语表三处仍是副本
   - 第一轮核对到的现状：`scripts/build.mjs` 会产出 `dist/core.js`（全局 `MXTCore`），但**运行时没有任何东西加载它** —— manifest 没声明、`background.js` 里 `MXTCore` 出现 0 次、`dist/background.js` 也没有 `importScripts`。也就是说「共享核心」当前只是测试用的事实来源，真正跑在浏览器里的是 `background.js` 里的复制品
 - [ ] 迁移顺序：纯逻辑模块 → 删重复实现 → 一致性测试改成「真的调用同一份实现」
 - [ ] 保持免构建体验：核心编译成浏览器可直接加载的 JS，Popup/Options/Content/Service Worker 继续用原生 JS
@@ -146,10 +148,28 @@ interface ImageRepairProvider {
 - ❌ **架构收敛** —— 地址策略现在又多了一份重复实现（核心 TS + `background.js`），
   靠 `tests/endpoint-parity.test.ts` 守着。这是同一笔债的第三次提醒
 
-### 下一轮该做什么
+### 第四轮（已完成）：让共享核心真的被加载
 
-1. **架构收敛**（ROADMAP P2）—— 重复实现已经三处（协议、提示词/标记、地址策略）。
-   每次加功能都要改两遍、再加一个一致性测试，成本已经超过收益
-2. **隐私政策 + 权限分层** —— 发布前的硬门槛
-3. **任务取消 / 进度 / API 诊断细分** —— 长页面翻译目前无法中止
-4. 漫画分级修复、竖排排版 —— 需要真实样本再决定
+- ✅ **`importScripts('core.js')`** —— `build.mjs` 的注释从第一天就写着「后台脚本用 importScripts 加载」，
+  但这件事一直没做：`dist/core.js` 产出了、`MXTCore` 在 `background.js` 里出现 0 次。
+  所谓「共享核心」只是测试用的事实来源，真正跑在浏览器里的是副本。
+- ✅ **地址策略收归核心** —— 删掉 `background.js` 里那份 90 行的副本，改成从 `MXTCore` 解构；
+  取不到时**明确报错**而不是退回本地实现（退回等于静默跑一份和测试不同的代码）
+- ✅ **一致性测试改成接线测试** —— `tests/endpoint-parity.test.ts` 原来是把副本抠出来比对，
+  现在守的是「加载了 core.js」「没有本地 function 定义」「核心真的导出这四个名字」
+- ✅ **测试夹具注入 MXTCore** —— `tests/helpers/load-background.ts` 与 `integration.test.ts`
+  在 Node 里把同一份核心挂到全局，测试跑的是「后台真的调用共享核心」的路径
+
+### 第四轮发现
+
+- 加载失败必须有可操作的提示：`importScripts` 失败在浏览器里只表现为「扩展加载失败」，
+  或者更糟——服务工作者起不来、点扩展「没反应」。所以缺符号时抛的是
+  「共享核心缺少 checkEndpoint，请重新构建（npm run build）」
+- 收敛的正确顺序是**先接通、再删副本**：如果先删副本，扩展会在一段时间里彻底不能用
+
+### 下一轮该做
+
+1. 继续收敛：协议构造（`buildRequest`）、提示词与标记（`parseMarked` / `splitInlineMarks`）、术语表
+2. 隐私政策 + 权限分层
+3. 任务取消 / 进度 / API 诊断细分
+
