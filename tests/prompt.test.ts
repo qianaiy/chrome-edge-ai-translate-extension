@@ -7,14 +7,25 @@ describe('systemPrompt', () => {
     expect(p).toContain('英文');
   });
 
-  it('包含编号规则列表 1..6', () => {
+  it('包含编号规则列表 1..8', () => {
     const p = systemPrompt({ targetLang: '英文' });
-    expect(p).toContain('1.');
-    expect(p).toContain('2.');
-    expect(p).toContain('3.');
-    expect(p).toContain('4.');
-    expect(p).toContain('5.');
-    expect(p).toContain('6.');
+    for (let i = 1; i <= 8; i++) {
+      expect(p, `规则 ${i}`).toContain(`${i}.`);
+    }
+  });
+
+  it('★ 要求 HTML 实体保持原样', () => {
+    /* 评测发现模型会把 &amp; 解码成 &，所以提示词里点名了 */
+    expect(systemPrompt({ targetLang: '英文' })).toContain('&amp;');
+  });
+
+  it('★ 要求数字加单位保持原样', () => {
+    expect(systemPrompt({ targetLang: '英文' })).toContain('25 MB');
+  });
+
+  it('★ 明确要求每一段都要真的翻译', () => {
+    /* 评测发现模型会把中文原文原样抄回来 */
+    expect(systemPrompt({ targetLang: '英文' })).toContain('每一段都必须真的翻译');
   });
 
   it('规则里要求沿用 <<<n>>> 标记', () => {

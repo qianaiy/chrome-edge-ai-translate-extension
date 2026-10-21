@@ -10,7 +10,9 @@ const DEFAULTS = {
   protocol: 'auto',
   autoDynamic: true,
   displayMode: 'bilingual',
-  showFab: true
+  showFab: true,
+  autoTranslate: false,
+  autoTranslateMinChars: 200
 };
 
 const PRESETS = {
@@ -29,8 +31,83 @@ const PRESETS = {
 };
 
 const $ = id => document.getElementById(id);
-const FIELDS = ['baseURL', 'apiKey', 'model', 'visionModel', 'asrModel', 'targetLang', 'temperature', 'extraPrompt', 'protocol', 'displayMode'];
-const BOOLS = ['autoDynamic', 'showFab'];
+const FIELDS = ['baseURL', 'apiKey', 'model', 'visionModel', 'asrModel', 'targetLang', 'temperature', 'extraPrompt', 'protocol', 'displayMode', 'autoTranslateMinChars'];
+const BOOLS = ['autoDynamic', 'showFab', 'autoTranslate'];
+
+/* 改完立刻生效的字段：勾一下 / 改一下就存，不用再点「保存」。
+   「保存」按钮仍然保留 —— 它现在只是把整个表单写一遍（比如批量改完多个字段）。 */
+const INSTANT = [...BOOLS, 'targetLang', 'displayMode', 'autoTranslateMinChars'];
+
+/* ---------------- 术语表 ---------------- */
+
+/** 解析术语表文本：「原文 = 译法」，行尾 @technical 表示只在技术内容里生效 */
+function parseGlossary(text) {
+  const entries = [];
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const i = line.indexOf('=');
+    if (i <= 0) continue;
+    const source = line.slice(0, i).trim();
+    let target = line.slice(i + 1).trim();
+    if (!source || !target) continue;
+    let scope = 'global';
+    /* 行尾的 @technical / @global */
+    const m = target.match(/\s*@(technical|global)\s*$/i);
+    if (m) {
+      scope = m[1].toLowerCase();
+      target = target.slice(0, m.index).trim();
+    }
+    if (!target) continue;
+    entries.push({ source, target, scope, match: 'case-insensitive' });
+  }
+  return entries;
+}
+
+/** 术语表 → 文本 */
+function formatGlossary(glossary) {
+  if (!glossary || !Array.isArray(glossary.entries)) return '';
+  return glossary.entries
+    .map(e => {
+      const scope = e.scope === 'technical' ? ' @technical' : '';
+      return `${e.source} = ${e.target}${scope}`;
+    })
+    .join('\n');
+}
+
+/** 术语表版本：内容变了版本就变，缓存自动失效 */
+function glossaryVersion(entries) {
+  return fnv(entries.map(e => `${e.source}=${e.target}:${e.scope || 'global'}`).join('|'));
+}
+
+/** FNV-1a（跟后台一致） */
+function fnv(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36) + '-' + str.length.toString(36);
+}
+
+/** 把当前表单写进 storage（只改传进来的字段，不动别的） */
+async function patchSettings(patch) {
+  const { settings } = await chrome.storage.local.get('settings');
+  const next = { ...(settings || {}), ...patch };
+  await chrome.storage.local.set({ settings: next });
+  return next;
+}
+
+/** 输入类字段防抖：打字过程中不反复写 */
+function debounce(fn, ms = 400) {
+  let t = null;
+  return (...args) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
 
 function readForm() {
   const out = {};
@@ -43,6 +120,11 @@ function readForm() {
     if (el) out[b] = !!el.checked;
   }
   out.temperature = Math.min(2, Math.max(0, Number(out.temperature) || 0));
+  out.autoTranslateMinChars = Math.max(0, Math.min(100000, Number(out.autoTranslateMinChars) || 0));
+  /* 术语表：解析成结构，同时记下版本号（内容变了版本就变） */
+  const entries = parseGlossary($('glossary') ? $('glossary').value : '');
+  out.glossary = entries.length ? { entries } : null;
+  out.glossaryVersion = entries.length ? glossaryVersion(entries) : '';
   return out;
 }
 
@@ -55,6 +137,8 @@ function writeForm(settings) {
     const el = $(b);
     if (el) el.checked = (settings[b] ?? DEFAULTS[b]) !== false;
   }
+  const gl = $('glossary');
+  if (gl) gl.value = formatGlossary(settings.glossary);
 }
 
 function setResult(text, kind) {
@@ -216,11 +300,21 @@ function selectModel(m) {
     : `已选 ${m.id}（非对话模型，翻译大概率用不了）`;
 }
 
+/* 一次最多渲染 300 个 —— 列表可能有几千个，全渲染会卡。
+   所有「面板里第几项」的判断都必须用这个截断后的列表，
+   否则键盘上下键能走到没渲染出来的项上，Enter 选中的东西跟看到的对不上。 */
+const PANEL_MAX = 300;
+
+/** 面板里实际显示的那些项（顺序跟渲染一致） */
+function shownModels() {
+  return filterModels(visibleModels(), $('modelSearch').value).slice(0, PANEL_MAX);
+}
+
 function renderPanel(query) {
   const list = $('modelList');
   const current = $('model').value.trim();
   const filtered = filterModels(visibleModels(), query);
-  const shown = filtered.slice(0, 300);
+  const shown = filtered.slice(0, PANEL_MAX);
 
   lastQuery = query || '';
   itemEls = new Map();
@@ -308,7 +402,7 @@ function refreshBadge(id) {
 }
 
 function movePanelIndex(step) {
-  const shown = filterModels(visibleModels(), $('modelSearch').value);
+  const shown = shownModels();
   if (!shown.length) return;
   const next = panelIndex + step;
   panelIndex = next < 0 ? shown.length - 1 : next >= shown.length ? 0 : next;
@@ -352,7 +446,7 @@ $('modelSearch').addEventListener('keydown', e => {
   }
   if (e.key === 'Enter') {
     e.preventDefault();
-    const shown = filterModels(visibleModels(), $('modelSearch').value);
+    const shown = shownModels();
     const pick = shown[panelIndex] || shown[0];
     if (pick) selectModel(pick);
     return;
@@ -648,6 +742,50 @@ $('save').addEventListener('click', async () => {
   setResult('已保存', 'ok');
   setTimeout(() => setResult('', ''), 2000);
 });
+
+/* 勾选框：一点就存，立刻生效，不用再点「保存」 */
+for (const b of BOOLS) {
+  const el = $(b);
+  if (!el) continue;
+  el.addEventListener('change', async () => {
+    await patchSettings({ [b]: el.checked });
+    setResult('已生效', 'ok');
+    setTimeout(() => setResult('', ''), 1500);
+  });
+}
+
+/* 下拉框和数字框：改完就存 */
+for (const f of ['targetLang', 'displayMode', 'autoTranslateMinChars']) {
+  const el = $(f);
+  if (!el) continue;
+  const save = debounce(async () => {
+    let v = el.value;
+    if (f === 'autoTranslateMinChars') v = Math.max(0, Math.min(100000, Number(v) || 0));
+    await patchSettings({ [f]: v });
+    setResult('已生效', 'ok');
+    setTimeout(() => setResult('', ''), 1500);
+  });
+  el.addEventListener('change', save);
+}
+
+/* 术语表：改完就存（防抖，打字过程中不反复写）。
+   存的时候要同时更新版本号 —— 术语变了，旧的翻译缓存就该失效。 */
+{
+  const el = $('glossary');
+  if (el) {
+    const save = debounce(async () => {
+      const entries = parseGlossary(el.value);
+      const version = entries.length ? glossaryVersion(entries) : '';
+      await patchSettings({
+        glossary: entries.length ? { entries } : null,
+        glossaryVersion: version
+      });
+      setResult(entries.length ? `已生效（${entries.length} 条术语）` : '已生效', 'ok');
+      setTimeout(() => setResult('', ''), 1500);
+    }, 600);
+    el.addEventListener('input', save);
+  }
+}
 
 $('test').addEventListener('click', async () => {
   const btn = $('test');

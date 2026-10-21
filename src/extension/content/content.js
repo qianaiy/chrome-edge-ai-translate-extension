@@ -31,7 +31,9 @@
     targetLang: '简体中文',
     root: null,
     mode: 'smart',
-    displayMode: 'bilingual'
+    displayMode: 'bilingual',
+    autoTranslateOn: false, // 「自动翻译外文网页」开关
+    autoSettings: null // 上次读到的设置，SPA 换页后复用
   };
 
   let runToken = 0; // 每轮翻译一个令牌，还原或重来时作废在途结果
@@ -634,15 +636,151 @@
     return true;
   }
 
+  /* 判断一段文字是不是目标语言。
+     汉字、假名、谚文必须分开算：中文页和日文页都是汉字为主，
+     早先把它们合在一起算「cjk」，结果日文页、韩文页被判成「已经是中文」，
+     一个块都不收，页面完全不翻。 */
   function isSameLanguage(text, target) {
     const letters = (text.match(/\p{L}/gu) || []).length;
     if (!letters) return true;
-    const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/gu) || []).length;
+    const han = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff]/gu) || []).length;
+    const kana = (text.match(/[\u3040-\u30ff\uff66-\uff9d]/gu) || []).length;
+    const hangul = (text.match(/[\uac00-\ud7af\u1100-\u11ff]/gu) || []).length;
     const latin = (text.match(/[A-Za-z]/g) || []).length;
     const t = String(target || '');
-    if (/中文|汉语|漢語|繁体|繁體/.test(t)) return cjk / letters > 0.6;
+
+    /* 简体中文 / 繁体中文：汉字为主，且没有明显假名（否则是日文） */
+    if (/中文|汉语|漢語|繁体|繁體|chinese|zh/i.test(t)) {
+      return kana < letters * 0.05 && hangul < letters * 0.05 && han / letters > 0.6;
+    }
+    /* 日文：得真的有假名。
+       纯汉字的页面（日文也常用汉字）光看文字分不出来，
+       这时候只有 <html lang> 能判定 —— 拿不到就当它不是目标语言，
+       宁可多翻一次，也不要整页不翻。 */
+    if (/日|japanese|jp/i.test(t)) {
+      if (kana / letters > 0.05) return true;
+      if (hangul / letters > 0.05) return false;
+      const htmlLang = String((document.documentElement && document.documentElement.lang) || '')
+        .trim()
+        .toLowerCase();
+      if (htmlLang.startsWith('ja')) return true;
+      return false;
+    }
+    /* 韩文：谚文为主 */
+    if (/한|韩|韓|korean|ko/i.test(t)) {
+      return hangul / letters > 0.1;
+    }
     if (/英语|英文|english/i.test(t)) return latin / letters > 0.9;
     return false;
+  }
+
+  /* --------------------- 页面语言判断 --------------------- */
+
+  /* 各书写系统的字符比例 */
+  function scriptRatio(text) {
+    const s = String(text || '');
+    const c = { han: 0, kana: 0, hangul: 0, latin: 0, cyrillic: 0, other: 0 };
+    let total = 0;
+    for (const ch of s) {
+      const p = ch.codePointAt(0);
+      if (p < 0x41) continue; // 标点、数字、控制字符
+      total++;
+      if (p >= 0x4e00 && p <= 0x9fff) c.han++;
+      else if ((p >= 0x3040 && p <= 0x30ff) || (p >= 0xff66 && p <= 0xff9d)) c.kana++;
+      else if ((p >= 0xac00 && p <= 0xd7af) || (p >= 0x1100 && p <= 0x11ff)) c.hangul++;
+      else if ((p >= 0x41 && p <= 0x5a) || (p >= 0x61 && p <= 0x7a) || (p >= 0xc0 && p <= 0x24f)) c.latin++;
+      else if (p >= 0x400 && p <= 0x4ff) c.cyrillic++;
+      else c.other++;
+    }
+    if (!total) return null;
+    return { ...c, total };
+  }
+
+  /* 目标语言名 → 大致的书写系统 */
+  function targetScript(target) {
+    const t = String(target || '').toLowerCase();
+    if (/中文|漢語|汉语|chinese|zh/.test(t)) return 'han';
+    if (/日|japanese|jp/.test(t)) return 'kana';
+    if (/한|韩|韓|korean|ko/.test(t)) return 'hangul';
+    if (/英语|英文|english|^en/.test(t)) return 'latin';
+    if (/俄|рус|russian/.test(t)) return 'cyrillic';
+    return null;
+  }
+
+  /**
+   * 这个页面是不是目标语言？
+   * 依据：<html lang> 优先（站点自己声明的最准），其次看正文文字的构成。
+   */
+  function pageIsTargetLanguage(text, target) {
+    const htmlLang = (document.documentElement && document.documentElement.lang) || '';
+    const t = String(target || '').trim();
+    const want = targetScript(t);
+
+    /* --- <html lang> 明确说了 --- */
+    const hl = String(htmlLang).trim().toLowerCase();
+    if (hl && hl !== 'und' && hl !== 'zxx') {
+      const base = hl.split('-')[0];
+      if (want === 'han' && base === 'zh') return true;
+      if (want === 'kana' && base === 'ja') return true;
+      if (want === 'hangul' && base === 'ko') return true;
+      if (want === 'latin' && base === 'en') return true;
+      if (want === 'cyrillic' && base === 'ru') return true;
+      /* 说是别的语言，且书写系统跟目标不一样 —— 肯定要翻 */
+      if (want && /^[a-z]{2,3}$/.test(base)) {
+        const s = scriptRatio(base);
+        if (s) {
+          /* 用 base 自己的文字判断不了书写系统，改用已知映射 */
+          const map = { ru: 'cyrillic', en: 'latin', ja: 'kana', ko: 'hangul', zh: 'han' };
+          const bs = map[base];
+          if (bs && bs !== want) return false;
+        }
+      }
+    }
+
+    /* --- 看文字构成 --- */
+    const r = scriptRatio(text);
+    if (!r) return true; // 没文字，先当是目标语言，不打扰用户
+    const cjk = r.han + r.kana + r.hangul;
+    if (want === 'han') return r.kana <= r.han * 0.3 && r.han / (cjk + r.latin + r.cyrillic || 1) > 0.3;
+    if (want === 'kana') {
+      /* 日语：得真的有假名。纯汉字的中文页面不算日语 ——
+         中文里也常用汉字，光看「汉字占主导」会把中文页面误判成日文。 */
+      if (r.kana > 0.05) return true;
+      return hl.startsWith('ja');
+    }
+    if (want === 'hangul') return r.hangul > 0.1;
+    if (want === 'latin') return r.latin > 0.5 && r.han < r.total * 0.1;
+    if (want === 'cyrillic') return r.cyrillic > 0.4;
+    return true; // 认不出目标语言就不自动翻
+  }
+
+  /* 抽样页面的正文，用来判断语言 */
+  function samplePageText() {
+    const parts = [];
+    let n = 0;
+    const walk = el => {
+      if (n > 4000) return;
+      for (const c of el.childNodes || []) {
+        if (n > 4000) return;
+        if (c.nodeType === 3) {
+          const s = String(c.nodeValue || '').trim();
+          if (s.length >= 2) {
+            parts.push(s);
+            n += s.length;
+          }
+        } else if (c.nodeType === 1) {
+          const tag = c.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'SVG') continue;
+          walk(c);
+        }
+      }
+    };
+    try {
+      walk(document.body || document.documentElement);
+    } catch (_) {
+      /* 忽略 */
+    }
+    return parts.join(' ').slice(0, 4000);
   }
 
   /* 已经翻过的段落别再翻一次 —— 动态加载时要靠它避免重复插入 */
@@ -650,6 +788,52 @@
     if (el.querySelector && el.querySelector(':scope > .mxt-trans')) return true;
     const next = el.nextElementSibling;
     return !!next && typeof next.getAttribute === 'function' && next.getAttribute('data-mxt') === '1';
+  }
+
+  /* React / Vue 这类框架更新内容时，会直接改文本节点，把我们的译文顶回原文，
+     但 DOM 结构没变、class 也留着（于是 mxt-swapped 还在，看着像「翻过了」）。
+     结果就是：框架一更新，那几行又变回英文，而且因为还带着 mxt-orig，
+     后面收集时会被 closest('.mxt-orig') 挡掉，再也补不回来。
+
+     这里判断「这个块标着已翻译，但当前文字其实还是原文」——是的话，
+     就把旧的翻译记录作废，让它能被重新收集、重新翻译。
+
+     两种换字方式都要管：
+       - parts（按文本节点换）：框架改了那几个文本节点
+       - 整块换：框架把子元素换回去了（我们插进去的文本节点被冲掉） */
+  function invalidateIfReverted(rec, targetLang) {
+    if (!rec || !rec.swapped) return false;
+    const el = rec.el;
+    if (!el || el.isConnected === false) return false;
+
+    const nowText = ownText(el);
+    if (!nowText) return false;
+
+    /* 拿当前文字和「我们翻之前的原文」比：一样就说明被顶回去了 */
+    const origText = rec.origText || '';
+    if (!origText) return false;
+    if (nowText !== origText) return false; // 译文还在，不用管
+
+    /* 文字确实被顶回原文了：作废这条记录，让它能被重新翻译 */
+    if (rec.node && rec.node.parentNode) rec.node.parentNode.removeChild(rec.node);
+    if (el.classList) {
+      el.classList.remove('mxt-swapped');
+      el.classList.remove('mxt-orig');
+    }
+    rec.swapped = false;
+    rec.savedTexts = null;
+    rec.parts = null;
+    rec.segs = null;
+    rec.text = '';
+    rec.origText = '';
+    /* 从全局列表里摘掉，否则还原时会对一个已经不存在的节点操作 */
+    const i = state.recs.indexOf(rec);
+    if (i >= 0) state.recs.splice(i, 1);
+    const j = state.nodes.indexOf(rec.node);
+    if (j >= 0) state.nodes.splice(j, 1);
+    const k = state.sources.indexOf(el);
+    if (k >= 0) state.sources.splice(k, 1);
+    return true;
   }
 
   /* ------------------------- 正文区域识别 ------------------------- */
@@ -847,6 +1031,13 @@
       all = Array.from(scope.querySelectorAll('*'));
     } catch (_) {
       return out;
+    }
+
+    /* 先把「被框架顶回原文」的块作废，让它们能被重新收集、重新翻译。
+       不做这一步的话，它们带着 mxt-orig，会被 closest('.mxt-orig') 挡掉，
+       永远翻不回来了。 */
+    for (const rec of state.recs.slice()) {
+      invalidateIfReverted(rec, targetLang);
     }
 
     /* 先标出「内部还有块级结构」的元素，避免把一个区块当成一段话整个翻掉 */
@@ -1056,6 +1247,8 @@
 
   function splitInlineMarks(text, count) {
     const s = String(text || '');
+    /* count 为 0 时后面 found[0] 会越界，直接返回空数组 */
+    if (count <= 0) return count === 0 ? [] : null;
     const found = [];
     INLINE_MARK.lastIndex = 0;
     let m;
@@ -1063,6 +1256,12 @@
       found.push({ k: Number(m[1]), at: m.index, end: m.index + m[0].length });
     }
     if (found.length !== count) return null; // 模型没保住标记，走兜底
+    /* 编号必须在 1..count 之内。模型偶尔会把编号写成 2,3,4（以为从 1 开始数），
+       这时 found.length 刚好等于 count，但 k-1 会越界写数组，
+       把后面几段的内容挤到错误的位置上。 */
+    for (const f of found) {
+      if (!Number.isInteger(f.k) || f.k < 1 || f.k > count) return null;
+    }
     const out = new Array(count).fill('');
     /* 第一个标记前面的内容（比如模型自己加的前缀）不能丢，
        接到第一段文字前面，不然这段就没被翻译 */
@@ -1131,6 +1330,9 @@
        要是译文 div 已经插进去了，<li><a>News</a></li> 就认不出 <a>，
        文字会停在一个不能点的独立 div 里。 */
     const target = swapTargetOf(el);
+    /* 记下「翻译前的原文」：框架（React 等）更新内容时会把文字顶回原文，
+       拿这个对比就能发现「被顶回去了」，好把它作废、重新翻译。 */
+    const origText = ownText(target);
     const div = document.createElement('div');
     div.className = 'mxt-trans';
     div.setAttribute('data-mxt', '1');
@@ -1170,6 +1372,7 @@
       inside: putInside,
       partial,
       target,
+      origText,
       parts: parts && parts.length ? parts : null,
       segs: parts && parts.length ? splitInlineMarks(text, parts.length) : null,
       saved: null,
@@ -1186,14 +1389,19 @@
       const myToken = token === undefined ? runToken : token;
       retranslateParts(rec, myToken).then(ok => {
         if (!ok) return;
-        /* 重新按文本节点替换；此时译文节点已经插好了，藏起来即可 */
+        /* 按文本节点替换。
+           注意：这里不能只在「还没记过原文」时才写 ——
+           「仅译文」模式下 swapIn() 早就把 savedTexts 记好了，
+           如果这里跳过，页面上的文字就还是原文，
+           而真正装着译文的 .mxt-trans 节点又被藏起来 —— 用户什么都看不到。
+           所以：原文该记就记（只在没记过时），文字**一定要写**。 */
         if (!rec.savedTexts) {
           rec.savedTexts = rec.parts.map(n => n.nodeValue);
-          rec.parts.forEach((n, i) => {
-            const v = rec.segs[i];
-            if (typeof v === 'string' && v) n.nodeValue = v;
-          });
         }
+        rec.parts.forEach((n, i) => {
+          const v = rec.segs[i];
+          if (typeof v === 'string' && v) n.nodeValue = v;
+        });
         if (rec.node && rec.node.classList) rec.node.classList.add('mxt-hidden');
         if (rec.el && rec.el.classList) rec.el.classList.add('mxt-swapped');
         rec.swapped = true;
@@ -1279,6 +1487,8 @@
        绝不能整段换字把 <a> 吃掉——链接点不了比多一行空白难受得多。
        这里先记下原文并打上 mxt-swapped，避免原文被「仅译文」的透明样式弄没。 */
     if (rec.parts) {
+      /* 记下原文（还原时要用）。只记一次 —— 反复进入这个分支会把
+         已经换上的译文当成「原文」记下来，还原之后就回不去了。 */
       if (!rec.savedTexts) rec.savedTexts = rec.parts.map(n => n.nodeValue);
       if (el.classList) el.classList.add('mxt-swapped');
       rec.swapped = true;
@@ -1513,20 +1723,52 @@
     return !!(el.closest && el.closest('#mxt-host'));
   }
 
+  /* 展开一个隐藏的菜单，会改 class / style，而不是插入新节点。
+     之前的 observer 只听 addedNodes，所以「展开下拉菜单」这个动作不触发补翻，
+     结果就是：收起状态下翻过的页面，展开菜单后里面全是英文。
+     这里同时监听属性变化，展开/收起菜单都能触发一轮补翻。 */
   function startObserver() {
     if (observer || !document.body || typeof MutationObserver !== 'function') return;
     observer = new MutationObserver(records => {
       for (const r of records) {
-        for (const n of r.addedNodes) {
-          if (!isOwnNode(n)) {
-            scheduleAuto(); // 只认新内容，自己的译文节点不算
+        if (r.type === 'childList') {
+          for (const n of r.addedNodes) {
+            if (!isOwnNode(n)) {
+              scheduleAuto(); // 只认新内容，自己的译文节点不算
+              return;
+            }
+          }
+        } else if (r.type === 'attributes') {
+          /* 只认「可能改变可见性」的属性。
+             关键：要排除我们自己改过的元素——翻译时会给元素加 mxt-swapped /
+             mxt-orig class，如果这些也触发补翻，就会自激成死循环
+             （翻译 → 改 class → 触发补翻 → 翻译 → …），页面卡在「翻译中」。
+             所以只认「不是我们自己动过」的属性变化。 */
+          const target = r.target;
+          if (
+            target &&
+            target.classList &&
+            (target.classList.contains('mxt-swapped') ||
+              target.classList.contains('mxt-orig') ||
+              target.classList.contains('mxt-trans'))
+          ) {
+            continue;
+          }
+          const name = r.attributeName || '';
+          if (name === 'class' || name === 'style' || name === 'hidden' || name === 'open') {
+            scheduleAuto();
             return;
           }
         }
       }
     });
     observedBody = document.body;
-    observer.observe(observedBody, { childList: true, subtree: true });
+    observer.observe(observedBody, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'open']
+    });
     state.observing = true;
   }
 
@@ -1747,10 +1989,67 @@
           if (settings.displayMode) state.displayMode = settings.displayMode;
         }
         setFab();
+        maybeAutoTranslate(settings);
       })
       .catch(() => setFab());
   } catch (_) {
     setFab(); // storage 不可用（极少见），至少让图标出来
+  }
+
+  /* 「自动翻译非目标语言页面」：页面加载完，判断语言，不是目标语言就自动翻。
+     记住「已经在哪几个 URL 上自动翻过了」而不是一个全局布尔 ——
+     SPA 换页后新页面的语言可能完全不同，得允许再判断一次。 */
+  const autoTriedUrls = new Set();
+
+  async function maybeAutoTranslate(settings) {
+    const s = settings || {};
+    /* 记住开关和设置，SPA 换页后要用同一份 */
+    state.autoTranslateOn = !!s.autoTranslate;
+    if (s.autoTranslate) state.autoSettings = s;
+    if (!s.autoTranslate) return; // 开关没开
+
+    const url = location.href;
+    if (autoTriedUrls.has(url)) return; // 这个地址已经判断过了
+    if (state.nodes.length || state.busy) return; // 已经翻过了
+
+    /* 等页面先加载完，不然正文还没出来，判断不出语言 */
+    if (document.readyState !== 'complete') {
+      await new Promise(r => {
+        const done = () => r();
+        window.addEventListener('load', done, { once: true });
+        setTimeout(done, 8000);
+      });
+      await new Promise(r => setTimeout(r, 400));
+    }
+
+    /* 标记要在真正动手前记下来，避免并发触发时翻两遍。
+       但如果因为「文字太少」提前返回，下次换页回来还要能重新判断，
+       所以只在真正做了判断（不管翻不翻）之后才记。 */
+    autoTriedUrls.add(url);
+
+    /* 没配接口就别自动翻了，免得直接报错 */
+    const res = await chrome.runtime.sendMessage({ type: 'mxt:configStatus' }).catch(() => null);
+    if (!res || !res.configured) return;
+
+    const target = s.targetLang || '简体中文';
+    const minChars = Number(s.autoTranslateMinChars) > 0 ? Number(s.autoTranslateMinChars) : 200;
+    const text = samplePageText();
+
+    /* 文字太少的多半是登录页、报错页、纯工具页，不自动翻。
+       这种情况不算「判断过」—— 页面后面可能才加载出正文，
+       把标记撤掉，让下一次轮询还能再判断。 */
+    if (text.length < minChars) {
+      autoTriedUrls.delete(url);
+      return;
+    }
+
+    if (pageIsTargetLanguage(text, target)) return; // 已经是目标语言了
+
+    try {
+      await togglePage('full');
+    } catch (_) {
+      /* 失败就算了，不打扰用户 */
+    }
   }
 
   /* 设置页一改就跟着变，不用刷新页面 */
@@ -1764,6 +2063,15 @@
         applyDisplay(state.displayMode, { quiet: true });
       }
       setFab();
+
+      /* 刚把「自动翻译外文网页」打开：当前这一页也该立刻判一次，
+         不用等用户刷新。 */
+      const wasOn = state.autoTranslateOn;
+      state.autoTranslateOn = !!s.autoTranslate;
+      if (s.autoTranslate) state.autoSettings = s;
+      if (state.autoTranslateOn && !wasOn) {
+        scheduleAutoRecheck();
+      }
     });
   } catch (_) {
     /* 老浏览器/测试环境没有 onChanged */
@@ -1804,7 +2112,34 @@
       lastURL = url;
       if (!state.nodes.length) runToken++; // 旧页面没了，作废在途结果
       if (state.observing) scheduleAuto();
+
+      /* SPA 换了页：新页面的语言可能跟上一页完全不同
+         （比如从中文首页点进一篇英文文章）。
+         之前只在进页面时判断一次语言，换页之后就不再判断了 ——
+         于是英文文章不会自动翻，中文文章反而可能被当成外文翻一遍。
+         这里重新判断一次；只在「这一页还没翻过」时动手，
+         免得把用户手动翻过的页面又翻一遍。 */
+      if (state.autoTranslateOn && !state.nodes.length && !state.busy) {
+        scheduleAutoRecheck();
+      }
     }
+  }
+
+  /* 换页后重新判断语言：等页面稳一下再判，否则拿到的是上一页的残留文字 */
+  let recheckTimer = null;
+  function scheduleAutoRecheck() {
+    if (recheckTimer) clearTimeout(recheckTimer);
+    recheckTimer = setTimeout(async () => {
+      recheckTimer = null;
+      if (!state.autoTranslateOn) return;
+      if (state.nodes.length || state.busy) return;
+      /* 已经在翻的页面别插队 */
+      try {
+        await maybeAutoTranslate({ autoTranslate: true, ...state.autoSettings });
+      } catch (_) {
+        /* 失败就算了 */
+      }
+    }, 1500);
   }
 
   let housekeepingTimer = setInterval(housekeeping, 3000);

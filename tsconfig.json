@@ -18,6 +18,6 @@
     "noEmit": true,
     "types": ["node", "vitest/globals"]
   },
-  "include": ["src/core/**/*.ts", "tests/**/*.ts"],
+  "include": ["src/core/**/*.ts", "eval/**/*.ts", "tests/**/*.ts"],
   "exclude": ["node_modules", "dist", "src/extension"]
 }

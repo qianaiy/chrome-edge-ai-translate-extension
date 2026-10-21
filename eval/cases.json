@@ -1,0 +1,595 @@
+[
+  {
+    "id": "plain-01-signup-welcome",
+    "category": "plain",
+    "source": "Welcome aboard! Your account is ready. Please set a password before you sign in for the first time.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "注册欢迎邮件，最普通的散文"
+  },
+  {
+    "id": "plain-02-shipping-notice",
+    "category": "plain",
+    "source": "Your order has shipped and should arrive within three business days. You can track the parcel with the link below.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "物流通知"
+  },
+  {
+    "id": "plain-03-support-reply",
+    "category": "plain",
+    "source": "Thanks for reaching out. We looked into the issue and it seems the payment was declined by your bank. Please try a different card.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "客服回复，条件从句容易翻飘"
+  },
+  {
+    "id": "plain-04-product-description",
+    "category": "plain",
+    "source": "Handwoven from 100% cotton, this blanket is soft, breathable, and machine washable. It comes in four neutral colors.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "商品描述，含百分比"
+  },
+  {
+    "id": "plain-05-upload-hint",
+    "category": "plain",
+    "source": "Upload a file to continue. Files larger than 25 MB will be rejected.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "25 MB"
+    ],
+    "note": "带单位的数值必须原样"
+  },
+  {
+    "id": "plain-06-server-error",
+    "category": "plain",
+    "source": "Something went wrong on our side. Please try again in a few minutes.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "错误提示，短而完整"
+  },
+  {
+    "id": "plain-07-job-posting",
+    "category": "plain",
+    "source": "We are hiring a backend engineer to work on our billing platform. You will own services from design through production.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "招聘启事"
+  },
+  {
+    "id": "plain-08-directions",
+    "category": "plain",
+    "source": "Turn left after the pharmacy and continue for two blocks. The museum is on your right, across from the park.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "路线指引，方向词容易错"
+  },
+  {
+    "id": "ph-01-curly-name",
+    "category": "placeholder",
+    "source": "Hello {name}, your invoice for March is ready. Please review it before the 15th.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "{name}"
+    ],
+    "note": "模板变量 {name}"
+  },
+  {
+    "id": "ph-02-printf-s",
+    "category": "placeholder",
+    "source": "The file could not be saved to %s. Check that the directory exists and try again.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "%s"
+    ],
+    "note": "printf 占位符 %s"
+  },
+  {
+    "id": "ph-03-html-tag",
+    "category": "placeholder",
+    "source": "Click <a href=\"#\">here</a> to reset your password. <strong>Important:</strong> the link expires in 30 minutes.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "<a href=\"#\">",
+      "</a>",
+      "<strong>",
+      "</strong>"
+    ],
+    "note": "内嵌 HTML 标签"
+  },
+  {
+    "id": "ph-04-double-brace",
+    "category": "placeholder",
+    "source": "Welcome to Acme. {{1}} Your workspace is ready. {{2}} Invite your team to get started.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "{{1}}",
+      "{{2}}"
+    ],
+    "note": "提示词第 6 条明确承诺的分段标记"
+  },
+  {
+    "id": "ph-05-i18n-plural",
+    "category": "placeholder",
+    "source": "You have {count, plural, one {# item} other {# items}} left in your cart.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "{count, plural, one {# item} other {# items}}"
+    ],
+    "note": "ICU 复数表达式，整块必须原样"
+  },
+  {
+    "id": "ph-06-mixed-placeholders",
+    "category": "placeholder",
+    "source": "Hi {name}, we could not process the payment of %s. Please update your card and try again. Ref: {{1}}",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "{name}",
+      "%s",
+      "{{1}}"
+    ],
+    "note": "三种占位符混在一段里"
+  },
+  {
+    "id": "ph-07-template-literal",
+    "category": "placeholder",
+    "source": "Set the timeout to ${TIMEOUT_MS} and restart the worker with `npm run worker`.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "${TIMEOUT_MS}",
+      "npm run worker"
+    ],
+    "note": "JS 模板字面量 + 命令"
+  },
+  {
+    "id": "code-01-npm-install",
+    "category": "code",
+    "source": "Run `npm install --save-dev typescript` to add TypeScript to your project, then restart the dev server.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "npm install --save-dev typescript"
+    ],
+    "note": "命令嵌在散文里"
+  },
+  {
+    "id": "code-02-error-code",
+    "category": "code",
+    "source": "The error `ECONNRESET` means the connection was closed before the response finished. Retry the request with a backoff.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "ECONNRESET"
+    ],
+    "note": "错误码不能被译成中文"
+  },
+  {
+    "id": "code-03-url",
+    "category": "code",
+    "source": "Documentation lives at https://example.com/docs/getting-started and is updated with every release.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "https://example.com/docs/getting-started"
+    ],
+    "note": "带路径的 URL"
+  },
+  {
+    "id": "code-04-email",
+    "category": "code",
+    "source": "Reply to support@example.com if the invoice is wrong. We answer within one business day.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "support@example.com"
+    ],
+    "note": "邮箱地址"
+  },
+  {
+    "id": "code-05-docker",
+    "category": "code",
+    "source": "Deploy with `docker compose up -d` and follow the logs with `docker compose logs -f web`.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "docker compose up -d",
+      "docker compose logs -f web"
+    ],
+    "note": "两条命令同段"
+  },
+  {
+    "id": "code-06-query-string",
+    "category": "code",
+    "source": "Set the callback to https://api.example.com/v1/webhook?token=abc123 and enable the \"retry\" flag in the dashboard.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "https://api.example.com/v1/webhook?token=abc123"
+    ],
+    "note": "带查询串的 URL，最容易被改写"
+  },
+  {
+    "id": "code-07-script-path",
+    "category": "code",
+    "source": "The migration script lives in scripts/migrate.py — run `python scripts/migrate.py --dry-run` before the real thing.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "scripts/migrate.py",
+      "python scripts/migrate.py --dry-run"
+    ],
+    "note": "路径与带参数的命令"
+  },
+  {
+    "id": "at-01-chinese-meeting",
+    "category": "already-target",
+    "source": "今天的会议改到下午三点，会议室在三楼。",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "alreadyTarget": true,
+    "note": "原文已是目标语言，必须原样返回"
+  },
+  {
+    "id": "at-02-chinese-report",
+    "category": "already-target",
+    "source": "请把报表发给财务部，截止时间是本周五。",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "alreadyTarget": true,
+    "note": "已是中文，不该被改写"
+  },
+  {
+    "id": "at-03-chinese-code",
+    "category": "already-target",
+    "source": "验证码已发送到你手机，有效期十分钟。",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "alreadyTarget": true,
+    "note": "已是中文，含数字"
+  },
+  {
+    "id": "at-04-chinese-placeholder",
+    "category": "already-target",
+    "source": "您好 {name}，您的订单 {orderId} 已经发货，物流单号稍后发给您。",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "{name}",
+      "{orderId}"
+    ],
+    "alreadyTarget": true,
+    "note": "已是中文，但占位符仍要保住"
+  },
+  {
+    "id": "at-05-chinese-with-file",
+    "category": "already-target",
+    "source": "配置文件在 config.yaml 里，改完记得重启服务。",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "config.yaml"
+    ],
+    "alreadyTarget": true,
+    "note": "已是中文 + 文件名"
+  },
+  {
+    "id": "at-06-english-unchanged",
+    "category": "already-target",
+    "source": "The deployment finished successfully and all health checks are green.",
+    "targetLang": "English",
+    "mustKeep": [],
+    "alreadyTarget": true,
+    "note": "已是英文，目标语言也是英文"
+  },
+  {
+    "id": "at-07-japanese-unchanged",
+    "category": "already-target",
+    "source": "会議は明日の午後三時から始まります。資料は事前に共有します。",
+    "targetLang": "日本語",
+    "mustKeep": [],
+    "alreadyTarget": true,
+    "note": "已是日文，含假名"
+  },
+  {
+    "id": "long-01-paragraph",
+    "category": "long",
+    "source": "Our team has been working on the new billing system for the past six months. The goal was to make invoices easier to read and to give customers a clear view of what they are paying for each month. During the rewrite we replaced a single large table with a set of smaller ones, which made the queries faster and the code far easier to test. Early feedback from support has been encouraging, and we expect the first customers to move over before the end of the quarter. As always, the migration is reversible, and the old system will stay available in read-only mode for at least another month.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "多句长段落，检查有没有被截断"
+  },
+  {
+    "id": "long-02-two-paragraphs",
+    "category": "long",
+    "source": "The API reference is generated from the source code, so it never drifts out of date. Every change lands in the same pull request as the docs you are reading now.\n\nIf a request returns 429, back off for the number of seconds in the Retry-After header. Repeated 429 responses usually mean the key is being shared by more than one client.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "429",
+      "Retry-After"
+    ],
+    "note": "两段 + HTTP 状态码"
+  },
+  {
+    "id": "long-03-placeholders",
+    "category": "long",
+    "source": "Hi {name}, here is the weekly summary for {project}. We finished {done} of {total} tasks, which puts us at {percent} percent of the quarter. Two items are still blocked: {blocker1} needs a decision from legal, and {blocker2} is waiting on the vendor. Reply to this message if any of the numbers look wrong.",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "{name}",
+      "{project}",
+      "{done}",
+      "{total}",
+      "{percent}",
+      "{blocker1}",
+      "{blocker2}"
+    ],
+    "note": "整段全是占位符，最能测出模型爱改格式"
+  },
+  {
+    "id": "long-04-legal",
+    "category": "long",
+    "source": "By continuing to use the service you agree to the following terms. We may update these terms from time to time, and material changes will be announced in the product at least thirty days before they take effect. If you do not agree with the updated terms, you may cancel your subscription before the effective date and receive a refund of any unused portion of the current billing period. All fees are charged in advance and are non-refundable except where the law requires otherwise.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "法律条款长句，测条件与语气"
+  },
+  {
+    "id": "mixed-01-cn-tech",
+    "category": "mixed",
+    "source": "请把 config.json 里的 timeout 改成 30，然后重启 worker。",
+    "targetLang": "English",
+    "mustKeep": [
+      "config.json",
+      "timeout"
+    ],
+    "note": "中文里夹英文标识符"
+  },
+  {
+    "id": "mixed-02-cn-product-names",
+    "category": "mixed",
+    "source": "我们上线了新的 Dashboard，现在支持 CSV 导出和 webhook 通知。",
+    "targetLang": "English",
+    "mustKeep": [
+      "Dashboard",
+      "CSV",
+      "webhook"
+    ],
+    "note": "中文句子 + 不该译的产品名"
+  },
+  {
+    "id": "mixed-03-en-cn",
+    "category": "mixed",
+    "source": "The 新版本 supports dark mode on macOS 和 Windows, 并且会在同步设置里保留偏好。",
+    "targetLang": "English",
+    "mustKeep": [
+      "macOS",
+      "Windows"
+    ],
+    "note": "英文里夹中文，方向反了"
+  },
+  {
+    "id": "mixed-04-cn-url",
+    "category": "mixed",
+    "source": "内部 API 已迁移到 https://internal.example.com/v2，旧地址将于下个月下线。",
+    "targetLang": "English",
+    "mustKeep": [
+      "https://internal.example.com/v2"
+    ],
+    "note": "中文散文 + 英文 URL"
+  },
+  {
+    "id": "tricky-01-html-string",
+    "category": "tricky",
+    "source": "<div class=\"card\"><h2>标题</h2><p>正文内容</p></div>",
+    "targetLang": "English",
+    "mustKeep": [
+      "<div class=\"card\">",
+      "<h2>",
+      "</h2>",
+      "<p>",
+      "</p>",
+      "</div>"
+    ],
+    "note": "HTML 片段，标签结构不能被拆散"
+  },
+  {
+    "id": "tricky-02-markdown",
+    "category": "tricky",
+    "source": "## 安装\n\n1. 下载压缩包\n2. 解压到 `/opt/app`\n3. 运行 `./start.sh`",
+    "targetLang": "English",
+    "mustKeep": [
+      "## ",
+      "/opt/app",
+      "./start.sh"
+    ],
+    "note": "Markdown，标题与列表符号要保住"
+  },
+  {
+    "id": "tricky-03-emoji",
+    "category": "tricky",
+    "source": "部署完成 🎉 服务已经上线 ✅ 有问题随时找我 😄",
+    "targetLang": "English",
+    "mustKeep": [
+      "🎉",
+      "✅",
+      "😄"
+    ],
+    "note": "emoji 必须原样"
+  },
+  {
+    "id": "tricky-04-short-fragment",
+    "category": "tricky",
+    "source": "保存",
+    "targetLang": "English",
+    "mustKeep": [],
+    "note": "两字按钮，不该被扩写"
+  },
+  {
+    "id": "tricky-05-number-only",
+    "category": "tricky",
+    "source": "42%",
+    "targetLang": "English",
+    "mustKeep": [
+      "42%"
+    ],
+    "note": "纯数字片段，必须原样"
+  },
+  {
+    "id": "tricky-06-html-entities",
+    "category": "tricky",
+    "source": "Tom &amp; Jerry&nbsp;&mdash; &quot;quoted&quot; text",
+    "targetLang": "English",
+    "mustKeep": [
+      "&amp;",
+      "&nbsp;",
+      "&mdash;",
+      "&quot;"
+    ],
+    "alreadyTarget": true,
+    "note": "HTML 实体，不能被解码；原文已是英文"
+  },
+  {
+    "id": "tricky-07-braces-and-percent",
+    "category": "tricky",
+    "source": "使用 {{0}} 作为索引，格式化成 %d 宽度。",
+    "targetLang": "English",
+    "mustKeep": [
+      "{{0}}",
+      "%d"
+    ],
+    "note": "两种占位符 + 格式化宽度"
+  },
+  {
+    "id": "sub-01-casual-line",
+    "category": "subtitle",
+    "source": "yeah I mean it kind of worked out",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "口语，没有标点，字幕里最常见的一句"
+  },
+  {
+    "id": "sub-02-repeated-word",
+    "category": "subtitle",
+    "source": "wait wait wait hold on",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "重复词表强调，不能只翻一次"
+  },
+  {
+    "id": "sub-03-truncated-sentence",
+    "category": "subtitle",
+    "source": "and then he just—",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "被下一句接走的断句，字幕按时间轴切开就是这样"
+  },
+  {
+    "id": "sub-04-name-and-term",
+    "category": "subtitle",
+    "source": "so Sophie took the Nightfall Blade and went north",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "人名和专有名词：提示词不承诺原样保留（官方汉化里音译/意译才是对的）。要不要固定译法是术语表的职责 —— 这条用例只检查它没被漏译或错译。"
+  },
+  {
+    "id": "sub-05-narration",
+    "category": "subtitle",
+    "source": "Three days later, the city was gone.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "旁白，书面语，跟对白风格要区分开"
+  },
+  {
+    "id": "sub-06-technical-explainer",
+    "category": "subtitle",
+    "source": "the kernel schedules threads onto CPU cores",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "科普视频字幕，术语要准"
+  },
+  {
+    "id": "sub-07-question-tag",
+    "category": "subtitle",
+    "source": "you're coming too, right?",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "反问句尾，中文习惯不同，不能直译成「对吗」"
+  },
+  {
+    "id": "sub-08-numbers-in-speech",
+    "category": "subtitle",
+    "source": "we have about 3,500 left and 12 days",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "3,500",
+      "12"
+    ],
+    "note": "数字不能改写、不能换算"
+  },
+  {
+    "id": "comic-01-short-shout",
+    "category": "comic",
+    "source": "HEY!",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "一个词，全大写表喊叫。漫画里的短对白"
+  },
+  {
+    "id": "comic-02-sfx",
+    "category": "comic",
+    "source": "BOOM!",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "拟声词。中文有对应拟声词，不要音译成「布姆」"
+  },
+  {
+    "id": "comic-03-threat",
+    "category": "comic",
+    "source": "You don't want to do that.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "威胁语气，要看得出冷，不是陈述句"
+  },
+  {
+    "id": "comic-04-sarcasm",
+    "category": "comic",
+    "source": "Oh, great. Another dead end.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "反讽。直译成「太好了」会把意思翻反"
+  },
+  {
+    "id": "comic-05-ellipsis",
+    "category": "comic",
+    "source": "...I see.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "省略号开头的短句，表示沉默/迟疑"
+  },
+  {
+    "id": "comic-06-two-speakers",
+    "category": "comic",
+    "source": "A: Where were you? | B: Around.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "两个角色的对话，语气要能区分开"
+  },
+  {
+    "id": "comic-07-child-speech",
+    "category": "comic",
+    "source": "Look look! I caught one!",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "小孩说话，不能翻成书面语"
+  },
+  {
+    "id": "comic-08-honorific",
+    "category": "comic",
+    "source": "Yes, my lady.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "称呼带敬语，中文要有对应的称呼方式"
+  },
+  {
+    "id": "sub-09-command-in-speech",
+    "category": "subtitle",
+    "source": "then run npm install --save-dev typescript to add it",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "npm install --save-dev typescript"
+    ],
+    "note": "字幕里念出命令，命令必须原样保留 —— 这才是 mustKeep 该管的"
+  }
+]

@@ -44,6 +44,8 @@ export {
   systemPromptSingle,
   parseMarked,
   stripMarkers,
+  splitInlineMarks,
+  INLINE_MARK,
   MARK_RE
 } from './prompt.js';
 
@@ -51,8 +53,68 @@ export {
   parseVtt,
   parseSrt,
   parseTime,
+  parseCueTiming,
   fmtTime,
+  fmtVttTime,
   fmtSrtTime,
   toVtt,
   type Cue
 } from './subtitle.js';
+
+export {
+  scriptRatio,
+  isTargetLanguage,
+  isHanLanguage,
+  scriptOfLang,
+  type Script,
+  type LangSample
+} from './detect.js';
+
+export {
+  boxToPixels,
+  adaptivePad,
+  getPixel,
+  setPixel,
+  estimateBackground,
+  eraseBox,
+  eraseAll,
+  readableColor,
+  toCss,
+  estimateTextWidth,
+  fitText,
+  type Box,
+  type RGBA,
+  type PixelBuffer,
+  type FitResult
+} from './inpaint.js';
+
+export {
+  fnv,
+  cacheKeyParts,
+  translationCacheKey,
+  selectGlossaryEntries,
+  glossaryInstruction,
+  checkGlossary,
+  looksTechnical,
+  type CacheKeyInput,
+  type Glossary,
+  type GlossaryEntry,
+  type GlossaryMatch
+} from './cache.js';
+
+export {
+  scoreTranslation,
+  summarize,
+  parseModelOutput,
+  effectiveLength,
+  lengthRatio,
+  stripCodeFence,
+  LENGTH_RATIO_MIN,
+  LENGTH_RATIO_MAX,
+  LENGTH_RATIO_MIN_SOURCE,
+  type EvalCase,
+  type CaseScore,
+  type Summary,
+  type CheckResult,
+  type CategorySummary
+} from './eval.js';

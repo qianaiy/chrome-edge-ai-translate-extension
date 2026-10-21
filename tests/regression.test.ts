@@ -56,8 +56,8 @@ describe('回归 · parseTime 必须锚定', () => {
   });
 });
 
-describe('回归 · VTT/SRT 解析忽略带尾巴的时间行', () => {
-  it('VTT 带 align 参数的行被跳过，不产生错位的时间点', () => {
+describe('回归 · VTT/SRT 解析处理带尾巴的时间行', () => {
+  it('★ VTT 带 align 参数的行要能解析出来（cue 设置只影响排版）', () => {
     const vtt = [
       'WEBVTT',
       '',
@@ -65,7 +65,17 @@ describe('回归 · VTT/SRT 解析忽略带尾巴的时间行', () => {
       '00:00:01.000 --> 00:00:02.000 align:start position:10%',
       'Hello'
     ].join('\n');
-    /* 整行不是纯时间戳 → 这条 cue 不该被解析出来 */
+    /* 真实世界的 VTT（YouTube、Netflix 等）时间行后面都带 cue 设置，
+       早先把它们整行判为非法，结果一条字幕都读不出来。 */
+    const cues = parseVtt(vtt);
+    expect(cues).toHaveLength(1);
+    expect(cues[0].start).toBeCloseTo(1);
+    expect(cues[0].end).toBeCloseTo(2);
+    expect(cues[0].text).toBe('Hello');
+  });
+
+  it('★ 时间本身非法时仍然跳过（锚定要保留）', () => {
+    const vtt = ['WEBVTT', '', '1', 'abc --> def', 'Hello'].join('\n');
     expect(parseVtt(vtt)).toEqual([]);
   });
 
@@ -172,8 +182,9 @@ describe('回归 · toVtt 往返', () => {
     expect(back[1].end).toBeCloseTo(4);
   });
 
-  it('toVtt 用秒级精度，小数秒会被取整（这是既有设计，不是缺陷）', () => {
+  it('★ toVtt 保留毫秒，不会把 4.5 秒压成 4 秒', () => {
+    /* 秒级精度会把 1.2s–1.8s 压成零长度，播放器显示不出来 */
     const vtt = toVtt([{ start: 0, end: 4.5, text: 'x' }], c => c.text);
-    expect(vtt).toContain('00:00 --> 00:04');
+    expect(vtt).toContain('00:00:00.000 --> 00:00:04.500');
   });
 });
