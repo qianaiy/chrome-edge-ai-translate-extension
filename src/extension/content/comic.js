@@ -278,6 +278,106 @@
     }
   }
 
+  /* ---------------- 译文排版 ---------------- */
+
+  /* 一个字在给定字号下大概多宽（相对字号的倍数）。
+     中日文一个字约等于字号宽度；拉丁字母平均约 0.55 倍。 */
+  function estimateTextWidth(text, fontSize) {
+    let units = 0;
+    for (const ch of String(text || '')) {
+      const c = ch.codePointAt(0);
+      if (c < 0x41) continue;
+      if (c >= 0x4e00 && c <= 0x9fff) units += 1;
+      else if (c >= 0x3040 && c <= 0x30ff) units += 1;
+      else if (c >= 0xac00 && c <= 0xd7af) units += 1;
+      else units += 0.55;
+    }
+    return units * fontSize;
+  }
+
+  /**
+   * 把译文塞进原文字的框里。
+   * 漫画里常见「原文很短、译文很长」—— 英文一句话翻成中文可能长一倍多，
+   * 直接画上去会溢出气泡、盖住旁边的画面。
+   * 做法：按框高算理想字号 → 放不下就缩字号 → 缩到底就折行 →
+   * 还放不下就截断加省略号。宁可少显示，也不能画到框外面。
+   */
+  function fitText(text, boxWidth, boxHeight, opts) {
+    const o = opts || {};
+    const minFont = Math.max(8, o.minFontSize ?? 10);
+    const maxFont = Math.max(minFont, o.maxFontSize ?? 34);
+    const lineHeight = o.lineHeight ?? 1.22;
+    const src = String(text || '').trim();
+    if (!src) return { fontSize: minFont, lines: [''], height: 0, shrunk: false };
+
+    const w = Math.max(1, boxWidth);
+    const h = Math.max(1, boxHeight);
+    const maxLines = Math.max(1, o.maxLines ?? Math.max(1, Math.floor(h / (minFont * lineHeight))));
+
+    let fontSize = Math.min(maxFont, Math.max(minFont, Math.round(h * 0.72)));
+
+    const linesFor = size => {
+      const perLine = Math.max(1, Math.floor(w / size));
+      const out = [];
+      let cur = '';
+      let units = 0;
+      const words = src.match(/\S+\s*|\s+/g) || [];
+
+      for (const word of words) {
+        const wu = estimateTextWidth(word, 1);
+        if (units + wu > perLine && cur) {
+          out.push(cur.trimEnd());
+          cur = '';
+          units = 0;
+        }
+        if (wu > perLine) {
+          /* 单个词就超宽（长英文单词或一整段没空格的中文）：按字切 */
+          let piece = '';
+          let pu = 0;
+          for (const ch of word) {
+            const cu = estimateTextWidth(ch, 1);
+            if (pu + cu > perLine && piece) {
+              out.push(piece);
+              piece = '';
+              pu = 0;
+            }
+            piece += ch;
+            pu += cu;
+          }
+          cur = piece;
+          units = pu;
+        } else {
+          cur += word;
+          units += wu;
+        }
+      }
+      if (cur.trim()) out.push(cur.trimEnd());
+      return out.length ? out : [''];
+    };
+
+    let lines = linesFor(fontSize);
+    let shrunk = false;
+
+    while (
+      fontSize > minFont &&
+      (lines.length > maxLines ||
+        lines.reduce((a, l) => a + estimateTextWidth(l, fontSize), 0) > w * 1.02)
+    ) {
+      fontSize -= 1;
+      lines = linesFor(fontSize);
+      shrunk = true;
+    }
+
+    if (lines.length > maxLines) {
+      lines = lines.slice(0, maxLines);
+      const last = lines[maxLines - 1];
+      lines[maxLines - 1] = last.length > 1 ? last.slice(0, -1) + '…' : last;
+      shrunk = true;
+    }
+
+    return { fontSize, lines, height: lines.length * fontSize * lineHeight, shrunk };
+  }
+
   /* ---------------- 擦字 + 背景修复 ---------------- */
 
   /* 画一版「擦掉原文、画上译文」的图。
@@ -386,7 +486,10 @@
 
     const boxes = items.filter(it => it.box && it.box.length === 4 && it.zh);
 
-    /* 先算好每个框的像素范围（还没擦，用的是原始图） */
+    /* 先算好每个框的像素范围（还没擦，用的是原始图）
+       擦除范围 = 模型给的框 + 余量。
+       擦的范围必须跟画译文的范围一致，否则会「擦了一半、画到别处」，
+       英文原文还露在外面，译文又压在上面，两层字叠着。 */
     const rects = boxes.map(b => {
       const [ax1, ay1, ax2, ay2] = b.box.map(Number);
       const pad = adaptivePad(b, buf.width, buf.height);
@@ -396,6 +499,16 @@
         x2: Math.min(buf.width, Math.round((Math.max(ax1, ax2) / 100) * buf.width) + pad.x),
         y2: Math.min(buf.height, Math.round((Math.max(ay1, ay2) / 100) * buf.height) + pad.y)
       };
+    });
+
+    /* 译文排版要按「擦干净的那块区域」来算，而不是模型给的原始框。
+       原始框可能没盖住整个字，擦过之后真正的空白区域更大，
+       译文按大一点的区域排，才不会跟没擦干净的笔画打架。 */
+    const fits = boxes.map((it, i) => {
+      const r = rects[i];
+      const w = Math.max(20, r.x2 - r.x1);
+      const h = Math.max(14, r.y2 - r.y1);
+      return fitText(it.zh, w, h);
     });
 
     /* 背景色必须在擦之前全估好：边擦边估的话，后一个框会拿
@@ -408,14 +521,13 @@
     /* 把擦过的像素写回 canvas */
     ctx.putImageData(new ImageData(buf.data, buf.width, buf.height), 0, 0);
 
-    /* 画译文 */
+    /* 画译文：字号和行数上面已经算好了，直接用 */
     boxes.forEach((it, i) => {
       const r = rects[i];
       const bg = bgs[i] || { r: 255, g: 255, b: 255 };
-      const w = Math.max(20, r.x2 - r.x1);
       const h = Math.max(14, r.y2 - r.y1);
-      /* 字号跟着原框高度走，但别大到溢出框 */
-      const fontSize = Math.max(11, Math.min(Math.round(h * 0.72), 34));
+      const fit = fits[i];
+      const fontSize = fit.fontSize;
 
       ctx.save();
       ctx.font = `600 ${fontSize}px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif`;
@@ -423,15 +535,20 @@
       ctx.textAlign = 'center';
 
       const cx = (r.x1 + r.x2) / 2;
-      const ty = r.y1 + Math.max(0, (h - fontSize) / 2);
+      /* 整体垂直居中 */
+      const totalH = fit.lines.length * fontSize * 1.22;
+      let ty = r.y1 + Math.max(0, (h - totalH) / 2);
 
       /* 描边：不管底色深浅都看得清 */
       ctx.lineWidth = Math.max(2, fontSize / 7);
       ctx.strokeStyle = readableColor(bg) === '#ffffff' ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.85)';
       ctx.lineJoin = 'round';
-      ctx.strokeText(it.zh, cx, ty);
-      ctx.fillStyle = readableColor(bg);
-      ctx.fillText(it.zh, cx, ty);
+      for (const line of fit.lines) {
+        ctx.strokeText(line, cx, ty);
+        ctx.fillStyle = readableColor(bg);
+        ctx.fillText(line, cx, ty);
+        ty += fontSize * 1.22;
+      }
       ctx.restore();
     });
 
