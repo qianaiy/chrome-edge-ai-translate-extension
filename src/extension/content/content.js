@@ -652,6 +652,52 @@
     return !!next && typeof next.getAttribute === 'function' && next.getAttribute('data-mxt') === '1';
   }
 
+  /* React / Vue 这类框架更新内容时，会直接改文本节点，把我们的译文顶回原文，
+     但 DOM 结构没变、class 也留着（于是 mxt-swapped 还在，看着像「翻过了」）。
+     结果就是：框架一更新，那几行又变回英文，而且因为还带着 mxt-orig，
+     后面收集时会被 closest('.mxt-orig') 挡掉，再也补不回来。
+
+     这里判断「这个块标着已翻译，但当前文字其实还是原文」——是的话，
+     就把旧的翻译记录作废，让它能被重新收集、重新翻译。
+
+     两种换字方式都要管：
+       - parts（按文本节点换）：框架改了那几个文本节点
+       - 整块换：框架把子元素换回去了（我们插进去的文本节点被冲掉） */
+  function invalidateIfReverted(rec, targetLang) {
+    if (!rec || !rec.swapped) return false;
+    const el = rec.el;
+    if (!el || el.isConnected === false) return false;
+
+    const nowText = ownText(el);
+    if (!nowText) return false;
+
+    /* 拿当前文字和「我们翻之前的原文」比：一样就说明被顶回去了 */
+    const origText = rec.origText || '';
+    if (!origText) return false;
+    if (nowText !== origText) return false; // 译文还在，不用管
+
+    /* 文字确实被顶回原文了：作废这条记录，让它能被重新翻译 */
+    if (rec.node && rec.node.parentNode) rec.node.parentNode.removeChild(rec.node);
+    if (el.classList) {
+      el.classList.remove('mxt-swapped');
+      el.classList.remove('mxt-orig');
+    }
+    rec.swapped = false;
+    rec.savedTexts = null;
+    rec.parts = null;
+    rec.segs = null;
+    rec.text = '';
+    rec.origText = '';
+    /* 从全局列表里摘掉，否则还原时会对一个已经不存在的节点操作 */
+    const i = state.recs.indexOf(rec);
+    if (i >= 0) state.recs.splice(i, 1);
+    const j = state.nodes.indexOf(rec.node);
+    if (j >= 0) state.nodes.splice(j, 1);
+    const k = state.sources.indexOf(el);
+    if (k >= 0) state.sources.splice(k, 1);
+    return true;
+  }
+
   /* ------------------------- 正文区域识别 ------------------------- */
 
   /* 常见的主内容容器。都不匹配就跟以前一样翻整页 */
@@ -847,6 +893,13 @@
       all = Array.from(scope.querySelectorAll('*'));
     } catch (_) {
       return out;
+    }
+
+    /* 先把「被框架顶回原文」的块作废，让它们能被重新收集、重新翻译。
+       不做这一步的话，它们带着 mxt-orig，会被 closest('.mxt-orig') 挡掉，
+       永远翻不回来了。 */
+    for (const rec of state.recs.slice()) {
+      invalidateIfReverted(rec, targetLang);
     }
 
     /* 先标出「内部还有块级结构」的元素，避免把一个区块当成一段话整个翻掉 */
@@ -1131,6 +1184,9 @@
        要是译文 div 已经插进去了，<li><a>News</a></li> 就认不出 <a>，
        文字会停在一个不能点的独立 div 里。 */
     const target = swapTargetOf(el);
+    /* 记下「翻译前的原文」：框架（React 等）更新内容时会把文字顶回原文，
+       拿这个对比就能发现「被顶回去了」，好把它作废、重新翻译。 */
+    const origText = ownText(target);
     const div = document.createElement('div');
     div.className = 'mxt-trans';
     div.setAttribute('data-mxt', '1');
@@ -1170,6 +1226,7 @@
       inside: putInside,
       partial,
       target,
+      origText,
       parts: parts && parts.length ? parts : null,
       segs: parts && parts.length ? splitInlineMarks(text, parts.length) : null,
       saved: null,
