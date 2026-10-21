@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { buildRequest, extractText } from '../src/core/protocol.js';
 import { resolveBase, detectProvider, checkConfigured, isLocalEndpoint } from '../src/core/provider.js';
+import { isTargetLanguage } from '../src/core/detect.js';
 
 /**
  * 扩展脚本（src/extension/background.js）与共享核心（src/core/）的一致性测试。
@@ -198,5 +199,22 @@ describe('扩展脚本与共享核心的一致性', () => {
     ];
     expect(bg.buildRequest('anthropic', s, msgs).body.system).toBe('你是翻译');
     expect(buildRequest('anthropic', s, msgs).body.system).toBe('你是翻译');
+  });
+});
+
+describe('页面语言判断', () => {
+  const CASES: { text: string; lang: string; target: string; want: boolean }[] = [
+    { text: '这是一段完整的中文网页正文，用来测试语言判断。', lang: 'zh-CN', target: '简体中文', want: true },
+    { text: 'This is an English paragraph of web page text for testing.', lang: 'en', target: '简体中文', want: false },
+    { text: 'This is an English paragraph of web page text for testing.', lang: 'en', target: 'English', want: true },
+    { text: 'これは日本語のテキストです。', lang: 'ja', target: '日本語', want: true },
+    { text: 'これは日本語のテキストです。', lang: 'ja', target: '简体中文', want: false },
+    { text: '这是一段中文正文，没有假名。', lang: '', target: '日本語', want: false },
+    { text: 'Это текст на русском языке для теста.', lang: 'ru', target: 'Русский', want: true },
+    { text: '이것은 한국어 텍스트입니다.', lang: 'ko', target: '한국어', want: true }
+  ];
+
+  it.each(CASES)('lang=$lang target=$target → $want', c => {
+    expect(isTargetLanguage(c.text, c.target, c.lang)).toBe(c.want);
   });
 });

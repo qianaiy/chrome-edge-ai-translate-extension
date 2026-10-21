@@ -20,7 +20,9 @@ const DEFAULTS = {
   protocol: 'auto',
   autoDynamic: true,
   displayMode: 'bilingual',
-  showFab: true
+  showFab: true,
+  autoTranslate: false, // 打开网页时自动翻译非目标语言的页面
+  autoTranslateMinChars: 200 // 文字太少的页面不自动翻（多半是登录页、报错页）
 };
 
 const PROTOCOLS = ['openai', 'anthropic', 'gemini'];

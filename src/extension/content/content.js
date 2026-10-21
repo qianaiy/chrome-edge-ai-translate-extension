@@ -645,6 +645,115 @@
     return false;
   }
 
+  /* --------------------- 页面语言判断 --------------------- */
+
+  /* 各书写系统的字符比例 */
+  function scriptRatio(text) {
+    const s = String(text || '');
+    const c = { han: 0, kana: 0, hangul: 0, latin: 0, cyrillic: 0, other: 0 };
+    let total = 0;
+    for (const ch of s) {
+      const p = ch.codePointAt(0);
+      if (p < 0x41) continue; // 标点、数字、控制字符
+      total++;
+      if (p >= 0x4e00 && p <= 0x9fff) c.han++;
+      else if ((p >= 0x3040 && p <= 0x30ff) || (p >= 0xff66 && p <= 0xff9d)) c.kana++;
+      else if ((p >= 0xac00 && p <= 0xd7af) || (p >= 0x1100 && p <= 0x11ff)) c.hangul++;
+      else if ((p >= 0x41 && p <= 0x5a) || (p >= 0x61 && p <= 0x7a) || (p >= 0xc0 && p <= 0x24f)) c.latin++;
+      else if (p >= 0x400 && p <= 0x4ff) c.cyrillic++;
+      else c.other++;
+    }
+    if (!total) return null;
+    return { ...c, total };
+  }
+
+  /* 目标语言名 → 大致的书写系统 */
+  function targetScript(target) {
+    const t = String(target || '').toLowerCase();
+    if (/中文|漢語|汉语|chinese|zh/.test(t)) return 'han';
+    if (/日|japanese|jp/.test(t)) return 'kana';
+    if (/한|韩|韓|korean|ko/.test(t)) return 'hangul';
+    if (/英语|英文|english|^en/.test(t)) return 'latin';
+    if (/俄|рус|russian/.test(t)) return 'cyrillic';
+    return null;
+  }
+
+  /**
+   * 这个页面是不是目标语言？
+   * 依据：<html lang> 优先（站点自己声明的最准），其次看正文文字的构成。
+   */
+  function pageIsTargetLanguage(text, target) {
+    const htmlLang = (document.documentElement && document.documentElement.lang) || '';
+    const t = String(target || '').trim();
+    const want = targetScript(t);
+
+    /* --- <html lang> 明确说了 --- */
+    const hl = String(htmlLang).trim().toLowerCase();
+    if (hl && hl !== 'und' && hl !== 'zxx') {
+      const base = hl.split('-')[0];
+      if (want === 'han' && base === 'zh') return true;
+      if (want === 'kana' && base === 'ja') return true;
+      if (want === 'hangul' && base === 'ko') return true;
+      if (want === 'latin' && base === 'en') return true;
+      if (want === 'cyrillic' && base === 'ru') return true;
+      /* 说是别的语言，且书写系统跟目标不一样 —— 肯定要翻 */
+      if (want && /^[a-z]{2,3}$/.test(base)) {
+        const s = scriptRatio(base);
+        if (s) {
+          /* 用 base 自己的文字判断不了书写系统，改用已知映射 */
+          const map = { ru: 'cyrillic', en: 'latin', ja: 'kana', ko: 'hangul', zh: 'han' };
+          const bs = map[base];
+          if (bs && bs !== want) return false;
+        }
+      }
+    }
+
+    /* --- 看文字构成 --- */
+    const r = scriptRatio(text);
+    if (!r) return true; // 没文字，先当是目标语言，不打扰用户
+    const cjk = r.han + r.kana + r.hangul;
+    if (want === 'han') return r.kana <= r.han * 0.3 && r.han / (cjk + r.latin + r.cyrillic || 1) > 0.3;
+    if (want === 'kana') {
+      /* 日语：得真的有假名。纯汉字的中文页面不算日语 ——
+         中文里也常用汉字，光看「汉字占主导」会把中文页面误判成日文。 */
+      if (r.kana > 0.05) return true;
+      return hl.startsWith('ja');
+    }
+    if (want === 'hangul') return r.hangul > 0.1;
+    if (want === 'latin') return r.latin > 0.5 && r.han < r.total * 0.1;
+    if (want === 'cyrillic') return r.cyrillic > 0.4;
+    return true; // 认不出目标语言就不自动翻
+  }
+
+  /* 抽样页面的正文，用来判断语言 */
+  function samplePageText() {
+    const parts = [];
+    let n = 0;
+    const walk = el => {
+      if (n > 4000) return;
+      for (const c of el.childNodes || []) {
+        if (n > 4000) return;
+        if (c.nodeType === 3) {
+          const s = String(c.nodeValue || '').trim();
+          if (s.length >= 2) {
+            parts.push(s);
+            n += s.length;
+          }
+        } else if (c.nodeType === 1) {
+          const tag = c.tagName;
+          if (tag === 'SCRIPT' || tag === 'STYLE' || tag === 'NOSCRIPT' || tag === 'SVG') continue;
+          walk(c);
+        }
+      }
+    };
+    try {
+      walk(document.body || document.documentElement);
+    } catch (_) {
+      /* 忽略 */
+    }
+    return parts.join(' ').slice(0, 4000);
+  }
+
   /* 已经翻过的段落别再翻一次 —— 动态加载时要靠它避免重复插入 */
   function alreadyTranslated(el) {
     if (el.querySelector && el.querySelector(':scope > .mxt-trans')) return true;
@@ -1836,10 +1945,51 @@
           if (settings.displayMode) state.displayMode = settings.displayMode;
         }
         setFab();
+        maybeAutoTranslate(settings);
       })
       .catch(() => setFab());
   } catch (_) {
     setFab(); // storage 不可用（极少见），至少让图标出来
+  }
+
+  /* 「自动翻译非目标语言页面」：页面加载完，判断语言，不是目标语言就自动翻 */
+  let autoTranslateTried = false;
+
+  async function maybeAutoTranslate(settings) {
+    const s = settings || {};
+    if (!s.autoTranslate) return; // 开关没开
+    if (autoTranslateTried) return; // 每个页面只试一次
+    if (state.nodes.length || state.busy) return; // 已经翻过了
+    /* 等页面先加载完，不然正文还没出来，判断不出语言 */
+    if (document.readyState !== 'complete') {
+      await new Promise(r => {
+        const done = () => r();
+        window.addEventListener('load', done, { once: true });
+        setTimeout(done, 8000);
+      });
+      await new Promise(r => setTimeout(r, 400));
+    }
+
+    autoTranslateTried = true;
+
+    /* 没配接口就别自动翻了，免得直接报错 */
+    const res = await chrome.runtime.sendMessage({ type: 'mxt:configStatus' }).catch(() => null);
+    if (!res || !res.configured) return;
+
+    const target = s.targetLang || '简体中文';
+    const minChars = Number(s.autoTranslateMinChars) > 0 ? Number(s.autoTranslateMinChars) : 200;
+    const text = samplePageText();
+
+    /* 文字太少的多半是登录页、报错页、纯工具页，不自动翻 */
+    if (text.length < minChars) return;
+
+    if (pageIsTargetLanguage(text, target)) return; // 已经是目标语言了
+
+    try {
+      await togglePage('full');
+    } catch (_) {
+      /* 失败就算了，不打扰用户 */
+    }
   }
 
   /* 设置页一改就跟着变，不用刷新页面 */

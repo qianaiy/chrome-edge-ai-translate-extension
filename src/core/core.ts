@@ -56,3 +56,12 @@ export {
   toVtt,
   type Cue
 } from './subtitle.js';
+
+export {
+  scriptRatio,
+  isTargetLanguage,
+  isHanLanguage,
+  scriptOfLang,
+  type Script,
+  type LangSample
+} from './detect.js';

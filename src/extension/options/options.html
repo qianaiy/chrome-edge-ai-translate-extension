@@ -376,6 +376,27 @@
       </div>
 
       <div class="card">
+        <h2>自动翻译</h2>
+        <label class="opt" for="autoTranslate">
+          <input type="checkbox" id="autoTranslate" />
+          <span>打开非目标语言的网页时自动翻译</span>
+        </label>
+        <div class="hint">
+          打开后，访问英文、日文等<strong>非目标语言</strong>的网页时会自动整页翻译，不用按快捷键。<br />
+          判断依据：先看网页自己声明的语言（<code>&lt;html lang&gt;</code>），没有的话看正文的文字构成。<br />
+          已经是目标语言的网页不受影响，不会重复翻。文字太少的页面（登录页、报错页）也会跳过。
+        </div>
+        <div class="field">
+          <label for="autoTranslateMinChars">自动翻译的文字量门槛（字符数）</label>
+          <input id="autoTranslateMinChars" type="number" min="0" max="100000" step="50" />
+        </div>
+        <div class="hint">
+          页面正文少于这个字数就不自动翻。默认 200 —— 太小了容易把登录页、报错页也翻一遍。<br />
+          调成 0 就是不管多短都翻。
+        </div>
+      </div>
+
+      <div class="card">
         <h2>质量与风格</h2>
         <div class="field">
           <label for="extraPrompt">附加要求（会拼进系统提示词，可留空）</label>

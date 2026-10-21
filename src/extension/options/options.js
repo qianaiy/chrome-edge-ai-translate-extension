@@ -10,7 +10,9 @@ const DEFAULTS = {
   protocol: 'auto',
   autoDynamic: true,
   displayMode: 'bilingual',
-  showFab: true
+  showFab: true,
+  autoTranslate: false,
+  autoTranslateMinChars: 200
 };
 
 const PRESETS = {
@@ -29,8 +31,8 @@ const PRESETS = {
 };
 
 const $ = id => document.getElementById(id);
-const FIELDS = ['baseURL', 'apiKey', 'model', 'visionModel', 'asrModel', 'targetLang', 'temperature', 'extraPrompt', 'protocol', 'displayMode'];
-const BOOLS = ['autoDynamic', 'showFab'];
+const FIELDS = ['baseURL', 'apiKey', 'model', 'visionModel', 'asrModel', 'targetLang', 'temperature', 'extraPrompt', 'protocol', 'displayMode', 'autoTranslateMinChars'];
+const BOOLS = ['autoDynamic', 'showFab', 'autoTranslate'];
 
 function readForm() {
   const out = {};
@@ -43,6 +45,7 @@ function readForm() {
     if (el) out[b] = !!el.checked;
   }
   out.temperature = Math.min(2, Math.max(0, Number(out.temperature) || 0));
+  out.autoTranslateMinChars = Math.max(0, Math.min(100000, Number(out.autoTranslateMinChars) || 0));
   return out;
 }
 
