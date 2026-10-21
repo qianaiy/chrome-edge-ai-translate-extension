@@ -73,7 +73,11 @@ export const EVAL_CATEGORIES = [
   'already-target',
   'long',
   'mixed',
-  'tricky'
+  'tricky',
+  /* 字幕：口语、无标点、断句常常不完整 */
+  'subtitle',
+  /* 漫画对白：极短、有语气和拟声词 */
+  'comic'
 ] as const;
 
 export type EvalCategory = (typeof EVAL_CATEGORIES)[number];

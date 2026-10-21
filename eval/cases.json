@@ -450,5 +450,146 @@
       "%d"
     ],
     "note": "两种占位符 + 格式化宽度"
+  },
+  {
+    "id": "sub-01-casual-line",
+    "category": "subtitle",
+    "source": "yeah I mean it kind of worked out",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "口语，没有标点，字幕里最常见的一句"
+  },
+  {
+    "id": "sub-02-repeated-word",
+    "category": "subtitle",
+    "source": "wait wait wait hold on",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "重复词表强调，不能只翻一次"
+  },
+  {
+    "id": "sub-03-truncated-sentence",
+    "category": "subtitle",
+    "source": "and then he just—",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "被下一句接走的断句，字幕按时间轴切开就是这样"
+  },
+  {
+    "id": "sub-04-name-and-term",
+    "category": "subtitle",
+    "source": "so Sophie took the Nightfall Blade and went north",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "人名和专有名词：提示词不承诺原样保留（官方汉化里音译/意译才是对的）。要不要固定译法是术语表的职责 —— 这条用例只检查它没被漏译或错译。"
+  },
+  {
+    "id": "sub-05-narration",
+    "category": "subtitle",
+    "source": "Three days later, the city was gone.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "旁白，书面语，跟对白风格要区分开"
+  },
+  {
+    "id": "sub-06-technical-explainer",
+    "category": "subtitle",
+    "source": "the kernel schedules threads onto CPU cores",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "科普视频字幕，术语要准"
+  },
+  {
+    "id": "sub-07-question-tag",
+    "category": "subtitle",
+    "source": "you're coming too, right?",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "反问句尾，中文习惯不同，不能直译成「对吗」"
+  },
+  {
+    "id": "sub-08-numbers-in-speech",
+    "category": "subtitle",
+    "source": "we have about 3,500 left and 12 days",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "3,500",
+      "12"
+    ],
+    "note": "数字不能改写、不能换算"
+  },
+  {
+    "id": "comic-01-short-shout",
+    "category": "comic",
+    "source": "HEY!",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "一个词，全大写表喊叫。漫画里的短对白"
+  },
+  {
+    "id": "comic-02-sfx",
+    "category": "comic",
+    "source": "BOOM!",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "拟声词。中文有对应拟声词，不要音译成「布姆」"
+  },
+  {
+    "id": "comic-03-threat",
+    "category": "comic",
+    "source": "You don't want to do that.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "威胁语气，要看得出冷，不是陈述句"
+  },
+  {
+    "id": "comic-04-sarcasm",
+    "category": "comic",
+    "source": "Oh, great. Another dead end.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "反讽。直译成「太好了」会把意思翻反"
+  },
+  {
+    "id": "comic-05-ellipsis",
+    "category": "comic",
+    "source": "...I see.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "省略号开头的短句，表示沉默/迟疑"
+  },
+  {
+    "id": "comic-06-two-speakers",
+    "category": "comic",
+    "source": "A: Where were you? | B: Around.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "两个角色的对话，语气要能区分开"
+  },
+  {
+    "id": "comic-07-child-speech",
+    "category": "comic",
+    "source": "Look look! I caught one!",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "小孩说话，不能翻成书面语"
+  },
+  {
+    "id": "comic-08-honorific",
+    "category": "comic",
+    "source": "Yes, my lady.",
+    "targetLang": "简体中文",
+    "mustKeep": [],
+    "note": "称呼带敬语，中文要有对应的称呼方式"
+  },
+  {
+    "id": "sub-09-command-in-speech",
+    "category": "subtitle",
+    "source": "then run npm install --save-dev typescript to add it",
+    "targetLang": "简体中文",
+    "mustKeep": [
+      "npm install --save-dev typescript"
+    ],
+    "note": "字幕里念出命令，命令必须原样保留 —— 这才是 mustKeep 该管的"
   }
 ]

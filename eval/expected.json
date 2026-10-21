@@ -43,5 +43,22 @@
   "tricky-04-short-fragment": "Save",
   "tricky-05-number-only": "42%",
   "tricky-06-html-entities": "Tom &amp; Jerry&nbsp;&mdash; &quot;quoted&quot; text",
-  "tricky-07-braces-and-percent": "Use {{0}} as the index and format it to %d width."
+  "tricky-07-braces-and-percent": "Use {{0}} as the index and format it to %d width.",
+  "sub-01-casual-line": "对 我是说 差不多就成了",
+  "sub-02-repeated-word": "等等等等 等一下",
+  "sub-03-truncated-sentence": "然后他就——",
+  "sub-04-name-and-term": "于是 Sophie 拿起 Nightfall Blade 往北去了",
+  "sub-05-narration": "三天后，那座城市没了。",
+  "sub-06-technical-explainer": "内核把线程调度到 CPU 核心上",
+  "sub-07-question-tag": "你也来吧？",
+  "sub-08-numbers-in-speech": "我们还剩大概 3,500 和 12 天",
+  "comic-01-short-shout": "喂！",
+  "comic-02-sfx": "轰！",
+  "comic-03-threat": "你最好别这么做。",
+  "comic-04-sarcasm": "哦，好啊。又一条死路。",
+  "comic-05-ellipsis": "……我明白了。",
+  "comic-06-two-speakers": "A：你去哪了？ | B：随便转转。",
+  "comic-07-child-speech": "快看快看！我抓到了一只！",
+  "comic-08-honorific": "是，小姐。",
+  "sub-09-command-in-speech": "然后运行 npm install --save-dev typescript 把它装上"
 }
