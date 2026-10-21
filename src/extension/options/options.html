@@ -384,7 +384,8 @@
         <div class="hint">
           打开后，访问英文、日文等<strong>非目标语言</strong>的网页时会自动整页翻译，不用按快捷键。<br />
           判断依据：先看网页自己声明的语言（<code>&lt;html lang&gt;</code>），没有的话看正文的文字构成。<br />
-          已经是目标语言的网页不受影响，不会重复翻。文字太少的页面（登录页、报错页）也会跳过。
+          已经是目标语言的网页不受影响，不会重复翻。文字太少的页面（登录页、报错页）也会跳过。<br />
+          <strong>这个开关在扩展弹窗里也有</strong>，不用进设置页就能改。
         </div>
         <div class="field">
           <label for="autoTranslateMinChars">自动翻译的文字量门槛（字符数）</label>
@@ -408,10 +409,14 @@
       <div class="card">
         <h2>操作</h2>
         <div class="actions">
-          <button class="primary" id="save">保存</button>
+          <button class="primary" id="save">保存全部</button>
           <button id="test">测试连接</button>
           <button id="clearCache">清空翻译缓存</button>
           <span id="testResult"></span>
+        </div>
+        <div class="hint">
+          开关和下拉框<strong>改完立刻生效</strong>，不用点保存。<br />
+          「保存全部」只在你一次改了多个输入框（接口、模型、密钥这些）时才需要点。
         </div>
         <div class="warn">
           扩展需要「读取你在所有网站上的数据」权限，因为划词和整页翻译必须注入页面。它不收集、不上传任何浏览数据；

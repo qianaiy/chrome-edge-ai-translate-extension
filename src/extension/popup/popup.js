@@ -79,6 +79,7 @@ async function init() {
   currentSettings = settings;
   $('model').textContent = settings.model;
   $('lang').value = settings.targetLang;
+  $('autoTranslate').checked = settings.autoTranslate === true;
 
   /* 配置体检交给后台，弹窗和后台共用同一套规则 */
   const cfg = await chrome.runtime.sendMessage({ type: 'mxt:configStatus' }).catch(() => null);
@@ -139,6 +140,16 @@ async function init() {
 $('lang').addEventListener('change', async () => {
   const settings = (await getSettings()) || {};
   await chrome.storage.local.set({ settings: { ...settings, targetLang: $('lang').value } });
+});
+
+/* 「自动翻译外文网页」开关：勾上就存，不用再点保存 */
+$('autoTranslate').addEventListener('change', async () => {
+  const on = $('autoTranslate').checked;
+  const settings = (await getSettings()) || {};
+  await chrome.storage.local.set({ settings: { ...settings, autoTranslate: on } });
+  const status = $('status');
+  status.textContent = on ? '已开启：以后打开外文网页会自动翻译' : '已关闭：外文网页不会自动翻译';
+  status.style.color = on ? '#15803d' : '#6b7280';
 });
 
 /* ------------------------- 页面操作 ------------------------- */

@@ -34,6 +34,27 @@ const $ = id => document.getElementById(id);
 const FIELDS = ['baseURL', 'apiKey', 'model', 'visionModel', 'asrModel', 'targetLang', 'temperature', 'extraPrompt', 'protocol', 'displayMode', 'autoTranslateMinChars'];
 const BOOLS = ['autoDynamic', 'showFab', 'autoTranslate'];
 
+/* 改完立刻生效的字段：勾一下 / 改一下就存，不用再点「保存」。
+   「保存」按钮仍然保留 —— 它现在只是把整个表单写一遍（比如批量改完多个字段）。 */
+const INSTANT = [...BOOLS, 'targetLang', 'displayMode', 'autoTranslateMinChars'];
+
+/** 把当前表单写进 storage（只改传进来的字段，不动别的） */
+async function patchSettings(patch) {
+  const { settings } = await chrome.storage.local.get('settings');
+  const next = { ...(settings || {}), ...patch };
+  await chrome.storage.local.set({ settings: next });
+  return next;
+}
+
+/** 输入类字段防抖：打字过程中不反复写 */
+function debounce(fn, ms = 400) {
+  let t = null;
+  return (...args) => {
+    if (t) clearTimeout(t);
+    t = setTimeout(() => fn(...args), ms);
+  };
+}
+
 function readForm() {
   const out = {};
   for (const f of FIELDS) {
@@ -651,6 +672,31 @@ $('save').addEventListener('click', async () => {
   setResult('已保存', 'ok');
   setTimeout(() => setResult('', ''), 2000);
 });
+
+/* 勾选框：一点就存，立刻生效，不用再点「保存」 */
+for (const b of BOOLS) {
+  const el = $(b);
+  if (!el) continue;
+  el.addEventListener('change', async () => {
+    await patchSettings({ [b]: el.checked });
+    setResult('已生效', 'ok');
+    setTimeout(() => setResult('', ''), 1500);
+  });
+}
+
+/* 下拉框和数字框：改完就存 */
+for (const f of ['targetLang', 'displayMode', 'autoTranslateMinChars']) {
+  const el = $(f);
+  if (!el) continue;
+  const save = debounce(async () => {
+    let v = el.value;
+    if (f === 'autoTranslateMinChars') v = Math.max(0, Math.min(100000, Number(v) || 0));
+    await patchSettings({ [f]: v });
+    setResult('已生效', 'ok');
+    setTimeout(() => setResult('', ''), 1500);
+  });
+  el.addEventListener('change', save);
+}
 
 $('test').addEventListener('click', async () => {
   const btn = $('test');
