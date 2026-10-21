@@ -21,11 +21,47 @@ The `gh` CLI must be installed and authenticated before any of this works:
 
 ```powershell
 winget install --id GitHub.cli
-gh auth login          # or: $env:GITHUB_TOKEN | gh auth login --with-token
+gh auth login          # interactive, or see the token note below
 gh auth status
 ```
 
 The token needs `repo` scope (classic PAT) or Issues read/write (fine-grained PAT).
+Authentication is stored in the OS keyring, so it survives across sessions.
+
+### If `gh` is not found
+
+Two known snags on this machine, both hit during setup:
+
+**1. `gh` is installed but a session cannot see it.** The installer adds
+`C:\Program Files\GitHub CLI` to the *machine* PATH, but any process that
+started before the install keeps its old PATH. If `gh` is not recognised
+but the file exists, use the full path for that session:
+
+```powershell
+$gh = "$env:ProgramFiles\GitHub CLI\gh.exe"
+& $gh issue list --repo qianaiy/chrome-edge-ai-translate-extension
+# or, to fix the whole session:
+$env:PATH = "$env:ProgramFiles\GitHub CLI;$env:PATH"
+```
+
+Restarting the host process picks the new PATH up permanently.
+
+**2. `gh auth login --with-token` reports 401 for a token that works.**
+Piping the token through PowerShell corrupts it — the token is fine, the
+pipe is not. Either pass it via the environment, or redirect from a file:
+
+```powershell
+$env:GH_TOKEN = "<token>"          # gh reads this directly
+
+# or, to persist it in the keyring:
+$tf = Join-Path $env:TEMP "gh-tok.txt"
+[System.IO.File]::WriteAllText($tf, "<token>", (New-Object System.Text.UTF8Encoding($false)))
+cmd /c "`"$env:ProgramFiles\GitHub CLI\gh.exe`" auth login --with-token < `"$tf`""
+Remove-Item $tf -Force
+```
+
+Do not put a token in this file, in `.env`, or anywhere else under version
+control — `npm run lint:secrets` scans for them and the repo must stay clean.
 
 ## Pull requests as a triage surface
 
