@@ -1513,20 +1513,52 @@
     return !!(el.closest && el.closest('#mxt-host'));
   }
 
+  /* 展开一个隐藏的菜单，会改 class / style，而不是插入新节点。
+     之前的 observer 只听 addedNodes，所以「展开下拉菜单」这个动作不触发补翻，
+     结果就是：收起状态下翻过的页面，展开菜单后里面全是英文。
+     这里同时监听属性变化，展开/收起菜单都能触发一轮补翻。 */
   function startObserver() {
     if (observer || !document.body || typeof MutationObserver !== 'function') return;
     observer = new MutationObserver(records => {
       for (const r of records) {
-        for (const n of r.addedNodes) {
-          if (!isOwnNode(n)) {
-            scheduleAuto(); // 只认新内容，自己的译文节点不算
+        if (r.type === 'childList') {
+          for (const n of r.addedNodes) {
+            if (!isOwnNode(n)) {
+              scheduleAuto(); // 只认新内容，自己的译文节点不算
+              return;
+            }
+          }
+        } else if (r.type === 'attributes') {
+          /* 只认「可能改变可见性」的属性。
+             关键：要排除我们自己改过的元素——翻译时会给元素加 mxt-swapped /
+             mxt-orig class，如果这些也触发补翻，就会自激成死循环
+             （翻译 → 改 class → 触发补翻 → 翻译 → …），页面卡在「翻译中」。
+             所以只认「不是我们自己动过」的属性变化。 */
+          const target = r.target;
+          if (
+            target &&
+            target.classList &&
+            (target.classList.contains('mxt-swapped') ||
+              target.classList.contains('mxt-orig') ||
+              target.classList.contains('mxt-trans'))
+          ) {
+            continue;
+          }
+          const name = r.attributeName || '';
+          if (name === 'class' || name === 'style' || name === 'hidden' || name === 'open') {
+            scheduleAuto();
             return;
           }
         }
       }
     });
     observedBody = document.body;
-    observer.observe(observedBody, { childList: true, subtree: true });
+    observer.observe(observedBody, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ['class', 'style', 'hidden', 'open']
+    });
     state.observing = true;
   }
 
