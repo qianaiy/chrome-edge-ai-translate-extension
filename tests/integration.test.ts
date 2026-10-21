@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { buildRequest, extractText } from '../src/core/protocol.js';
 import { resolveBase, detectProvider, checkConfigured, isLocalEndpoint } from '../src/core/provider.js';
 import { isTargetLanguage } from '../src/core/detect.js';
+import { systemPrompt, systemPromptSingle } from '../src/core/prompt.js';
 
 /**
  * 扩展脚本（src/extension/background.js）与共享核心（src/core/）的一致性测试。
@@ -199,6 +200,12 @@ describe('扩展脚本与共享核心的一致性', () => {
     ];
     expect(bg.buildRequest('anthropic', s, msgs).body.system).toBe('你是翻译');
     expect(buildRequest('anthropic', s, msgs).body.system).toBe('你是翻译');
+  });
+
+  it('systemPrompt 两边完全一致', () => {
+    const s = { targetLang: '简体中文', extraPrompt: '保持正式语气' };
+    expect(bg.systemPrompt(s)).toBe(systemPrompt(s));
+    expect(bg.systemPromptSingle(s)).toBe(systemPromptSingle(s));
   });
 });
 
