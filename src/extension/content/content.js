@@ -634,13 +634,40 @@
     return true;
   }
 
+  /* 判断一段文字是不是目标语言。
+     汉字、假名、谚文必须分开算：中文页和日文页都是汉字为主，
+     早先把它们合在一起算「cjk」，结果日文页、韩文页被判成「已经是中文」，
+     一个块都不收，页面完全不翻。 */
   function isSameLanguage(text, target) {
     const letters = (text.match(/\p{L}/gu) || []).length;
     if (!letters) return true;
-    const cjk = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/gu) || []).length;
+    const han = (text.match(/[\u3400-\u4dbf\u4e00-\u9fff]/gu) || []).length;
+    const kana = (text.match(/[\u3040-\u30ff\uff66-\uff9d]/gu) || []).length;
+    const hangul = (text.match(/[\uac00-\ud7af\u1100-\u11ff]/gu) || []).length;
     const latin = (text.match(/[A-Za-z]/g) || []).length;
     const t = String(target || '');
-    if (/中文|汉语|漢語|繁体|繁體/.test(t)) return cjk / letters > 0.6;
+
+    /* 简体中文 / 繁体中文：汉字为主，且没有明显假名（否则是日文） */
+    if (/中文|汉语|漢語|繁体|繁體|chinese|zh/i.test(t)) {
+      return kana < letters * 0.05 && hangul < letters * 0.05 && han / letters > 0.6;
+    }
+    /* 日文：得真的有假名。
+       纯汉字的页面（日文也常用汉字）光看文字分不出来，
+       这时候只有 <html lang> 能判定 —— 拿不到就当它不是目标语言，
+       宁可多翻一次，也不要整页不翻。 */
+    if (/日|japanese|jp/i.test(t)) {
+      if (kana / letters > 0.05) return true;
+      if (hangul / letters > 0.05) return false;
+      const htmlLang = String((document.documentElement && document.documentElement.lang) || '')
+        .trim()
+        .toLowerCase();
+      if (htmlLang.startsWith('ja')) return true;
+      return false;
+    }
+    /* 韩文：谚文为主 */
+    if (/한|韩|韓|korean|ko/i.test(t)) {
+      return hangul / letters > 0.1;
+    }
     if (/英语|英文|english/i.test(t)) return latin / letters > 0.9;
     return false;
   }
@@ -1360,14 +1387,19 @@
       const myToken = token === undefined ? runToken : token;
       retranslateParts(rec, myToken).then(ok => {
         if (!ok) return;
-        /* 重新按文本节点替换；此时译文节点已经插好了，藏起来即可 */
+        /* 按文本节点替换。
+           注意：这里不能只在「还没记过原文」时才写 ——
+           「仅译文」模式下 swapIn() 早就把 savedTexts 记好了，
+           如果这里跳过，页面上的文字就还是原文，
+           而真正装着译文的 .mxt-trans 节点又被藏起来 —— 用户什么都看不到。
+           所以：原文该记就记（只在没记过时），文字**一定要写**。 */
         if (!rec.savedTexts) {
           rec.savedTexts = rec.parts.map(n => n.nodeValue);
-          rec.parts.forEach((n, i) => {
-            const v = rec.segs[i];
-            if (typeof v === 'string' && v) n.nodeValue = v;
-          });
         }
+        rec.parts.forEach((n, i) => {
+          const v = rec.segs[i];
+          if (typeof v === 'string' && v) n.nodeValue = v;
+        });
         if (rec.node && rec.node.classList) rec.node.classList.add('mxt-hidden');
         if (rec.el && rec.el.classList) rec.el.classList.add('mxt-swapped');
         rec.swapped = true;
@@ -1453,6 +1485,8 @@
        绝不能整段换字把 <a> 吃掉——链接点不了比多一行空白难受得多。
        这里先记下原文并打上 mxt-swapped，避免原文被「仅译文」的透明样式弄没。 */
     if (rec.parts) {
+      /* 记下原文（还原时要用）。只记一次 —— 反复进入这个分支会把
+         已经换上的译文当成「原文」记下来，还原之后就回不去了。 */
       if (!rec.savedTexts) rec.savedTexts = rec.parts.map(n => n.nodeValue);
       if (el.classList) el.classList.add('mxt-swapped');
       rec.swapped = true;

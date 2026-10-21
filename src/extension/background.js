@@ -1778,7 +1778,14 @@ chrome.runtime.onConnect.addListener(port => {
 
       if (cachedBlock) reply({ type: 'delta', text: cachedBlock + '\n' });
 
-      const payload = pending.map(p => `<<<${p.i + 1}>>>${p.src}`).join('\n');
+      /* 送给模型的编号要是连续的 1..N。
+         之前用的是原始下标（p.i + 1）。当命中缓存的段和要问模型的段混在一起时，
+         缓存段用原始编号、模型段也用原始编号，合并后文本里就出现两个 <<<1>>>，
+         而模型通常会「好心」把回复重新编号成 1..N —— 结果整批译文都错位，
+         页面上会出现「A 段显示 B 段的译文」，还会把错的对应关系写进缓存，
+         之后每次来都错。
+         所以这里统一用连续编号发给模型，回来时再映射回原始下标。 */
+      const payload = pending.map((p, k) => `<<<${k + 1}>>>${p.src}`).join('\n');
       const { text, protocol } = await chatStream(
         settings,
         [
@@ -1788,15 +1795,32 @@ chrome.runtime.onConnect.addListener(port => {
         delta => reply({ type: 'delta', text: delta })
       );
 
-      const merged = cachedBlock ? cachedBlock + '\n' + text : text;
+      /* 模型返回的段号是 1..pending.length，要映射回 list 里的原始下标 */
+      const parsed = parseMarked(text, pending.length);
+      const fresh = new Map(); // 原始下标 -> 译文
+      parsed.forEach((v, k) => {
+        if (!v) return;
+        const p = pending[k];
+        if (!p) return;
+        fresh.set(p.i, v);
+      });
+
+      /* 合并给页面：缓存段和模型段都还原成原始编号，按原始下标排好 */
+      const byIndex = new Map();
+      for (const x of cachedLines) byIndex.set(x.i, x.v);
+      for (const [i, v] of fresh) byIndex.set(i, v);
+      const merged = [...byIndex.entries()]
+        .sort((a, b) => a[0] - b[0])
+        .map(([i, v]) => `<<<${i + 1}>>>${v}`)
+        .join('\n');
       reply({ type: 'done', raw: merged, protocol });
 
-      parseMarked(text, list.length).forEach((v, i) => {
-        if (!v) return;
+      /* 回写缓存：按原始下标对应的原文存，不要用模型的段号 */
+      for (const [i, v] of fresh) {
         const src = String(list[i] ?? '').trim();
-        if (!src || v === src) return;
+        if (!src || v === src) continue;
         cache[cacheKey(settings, src)] = { v, t: Date.now() };
-      });
+      }
       scheduleFlush();
     } catch (e) {
       reply({ type: 'error', error: e?.message || String(e) });

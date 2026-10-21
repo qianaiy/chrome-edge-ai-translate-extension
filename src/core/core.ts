@@ -53,7 +53,9 @@ export {
   parseVtt,
   parseSrt,
   parseTime,
+  parseCueTiming,
   fmtTime,
+  fmtVttTime,
   fmtSrtTime,
   toVtt,
   type Cue

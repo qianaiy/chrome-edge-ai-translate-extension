@@ -180,10 +180,10 @@ describe('toVtt', () => {
     expect(vtt).toContain('\n2\n');
   });
 
-  it('用 --> 分隔时间轴', () => {
+  it('用 --> 分隔时间轴（带毫秒，避免零长度 cue）', () => {
     const vtt = toVtt(cues, c => c.text);
-    expect(vtt).toContain('00:00 --> 00:05');
-    expect(vtt).toContain('00:05 --> 00:10');
+    expect(vtt).toContain('00:00:00.000 --> 00:00:05.000');
+    expect(vtt).toContain('00:00:05.000 --> 00:00:10.000');
   });
 
   it('使用 getText 回调取文本', () => {

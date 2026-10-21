@@ -20,6 +20,23 @@
 
   /* ------------------------- 字幕解析 ------------------------- */
 
+  /* 从一行时间轴里取出起止时间。
+     WebVTT 的时间行后面会跟一串 cue 设置：
+       "00:00:03.000 --> 00:00:04.000 align:start position:0%"
+     这些设置只影响排版，不影响时间，所以要**先切掉**再解析时间 ——
+     否则锚定过的正则会把整行判为非法，整条 cue 被丢掉。
+     （切掉设置之后正则仍然要锚定，否则 "abc 01:02.500" 又会被误解析。） */
+  function parseCueTiming(line) {
+    const t = String(line || '');
+    const i = t.indexOf('-->');
+    if (i < 0) return null;
+    const start = parseTime(t.slice(0, i));
+    const endPart = t.slice(i + 3).trim().split(/\s+/)[0] || '';
+    const end = parseTime(endPart);
+    if (start == null || end == null) return null;
+    return { start, end };
+  }
+
   /* WebVTT -> [{ start, end, text }] */
   function parseVtt(raw) {
     const cues = [];
@@ -35,10 +52,9 @@
       if (!lines[i].includes('-->')) i++;
       const tl = lines[i] || '';
       if (!tl.includes('-->')) continue;
-      const [a, z] = tl.split('-->');
-      const start = parseTime(a);
-      const end = parseTime(z);
-      if (start == null || end == null) continue;
+      const timing = parseCueTiming(tl);
+      if (!timing) continue;
+      const { start, end } = timing;
       const text = lines
         .slice(i + 1)
         .join('\n')
@@ -63,10 +79,9 @@
       if (!lines[i].includes('-->')) i++;
       const tl = lines[i] || '';
       if (!tl.includes('-->')) continue;
-      const [a, z] = tl.split('-->');
-      const start = parseTime(a);
-      const end = parseTime(z);
-      if (start == null || end == null) continue;
+      const timing = parseCueTiming(tl);
+      if (!timing) continue;
+      const { start, end } = timing;
       const text = lines
         .slice(i + 1)
         .join('\n')
@@ -117,11 +132,30 @@
     return `${p(h)}:${p(m)}:${p(sec)},${p(ms, 3)}`;
   }
 
+  /* 秒 → "00:00:01.200"（WebVTT 的时间格式，带毫秒） */
+  function fmtVttTime(t) {
+    const s = Math.max(0, t || 0);
+    let totalSec = Math.floor(s);
+    let ms = Math.round((s - totalSec) * 1000);
+    /* 舍入到 1000 毫秒时要进位 */
+    if (ms >= 1000) {
+      ms -= 1000;
+      totalSec += 1;
+    }
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const sec = totalSec % 60;
+    const p = (n, w = 2) => String(n).padStart(w, '0');
+    return `${p(h)}:${p(m)}:${p(sec)}.${p(ms, 3)}`;
+  }
+
   function toVtt(cues, getText) {
     const out = ['WEBVTT', ''];
     cues.forEach((c, i) => {
       out.push(String(i + 1));
-      out.push(`${fmtTime(c.start)} --> ${fmtTime(c.end)}`);
+      /* 用带毫秒的格式：秒级精度会把 1.2s–1.8s 压成 "00:01 --> 00:01"，
+         零长度的 cue 播放器显示不出来，相邻的短字幕还会叠在一起。 */
+      out.push(`${fmtVttTime(c.start)} --> ${fmtVttTime(c.end)}`);
       out.push(getText(c));
       out.push('');
     });
