@@ -31,7 +31,9 @@
     targetLang: '简体中文',
     root: null,
     mode: 'smart',
-    displayMode: 'bilingual'
+    displayMode: 'bilingual',
+    autoTranslateOn: false, // 「自动翻译外文网页」开关
+    autoSettings: null // 上次读到的设置，SPA 换页后复用
   };
 
   let runToken = 0; // 每轮翻译一个令牌，还原或重来时作废在途结果
@@ -1994,14 +1996,22 @@
     setFab(); // storage 不可用（极少见），至少让图标出来
   }
 
-  /* 「自动翻译非目标语言页面」：页面加载完，判断语言，不是目标语言就自动翻 */
-  let autoTranslateTried = false;
+  /* 「自动翻译非目标语言页面」：页面加载完，判断语言，不是目标语言就自动翻。
+     记住「已经在哪几个 URL 上自动翻过了」而不是一个全局布尔 ——
+     SPA 换页后新页面的语言可能完全不同，得允许再判断一次。 */
+  const autoTriedUrls = new Set();
 
   async function maybeAutoTranslate(settings) {
     const s = settings || {};
+    /* 记住开关和设置，SPA 换页后要用同一份 */
+    state.autoTranslateOn = !!s.autoTranslate;
+    if (s.autoTranslate) state.autoSettings = s;
     if (!s.autoTranslate) return; // 开关没开
-    if (autoTranslateTried) return; // 每个页面只试一次
+
+    const url = location.href;
+    if (autoTriedUrls.has(url)) return; // 这个地址已经判断过了
     if (state.nodes.length || state.busy) return; // 已经翻过了
+
     /* 等页面先加载完，不然正文还没出来，判断不出语言 */
     if (document.readyState !== 'complete') {
       await new Promise(r => {
@@ -2012,7 +2022,10 @@
       await new Promise(r => setTimeout(r, 400));
     }
 
-    autoTranslateTried = true;
+    /* 标记要在真正动手前记下来，避免并发触发时翻两遍。
+       但如果因为「文字太少」提前返回，下次换页回来还要能重新判断，
+       所以只在真正做了判断（不管翻不翻）之后才记。 */
+    autoTriedUrls.add(url);
 
     /* 没配接口就别自动翻了，免得直接报错 */
     const res = await chrome.runtime.sendMessage({ type: 'mxt:configStatus' }).catch(() => null);
@@ -2022,8 +2035,13 @@
     const minChars = Number(s.autoTranslateMinChars) > 0 ? Number(s.autoTranslateMinChars) : 200;
     const text = samplePageText();
 
-    /* 文字太少的多半是登录页、报错页、纯工具页，不自动翻 */
-    if (text.length < minChars) return;
+    /* 文字太少的多半是登录页、报错页、纯工具页，不自动翻。
+       这种情况不算「判断过」—— 页面后面可能才加载出正文，
+       把标记撤掉，让下一次轮询还能再判断。 */
+    if (text.length < minChars) {
+      autoTriedUrls.delete(url);
+      return;
+    }
 
     if (pageIsTargetLanguage(text, target)) return; // 已经是目标语言了
 
@@ -2045,6 +2063,15 @@
         applyDisplay(state.displayMode, { quiet: true });
       }
       setFab();
+
+      /* 刚把「自动翻译外文网页」打开：当前这一页也该立刻判一次，
+         不用等用户刷新。 */
+      const wasOn = state.autoTranslateOn;
+      state.autoTranslateOn = !!s.autoTranslate;
+      if (s.autoTranslate) state.autoSettings = s;
+      if (state.autoTranslateOn && !wasOn) {
+        scheduleAutoRecheck();
+      }
     });
   } catch (_) {
     /* 老浏览器/测试环境没有 onChanged */
@@ -2085,7 +2112,34 @@
       lastURL = url;
       if (!state.nodes.length) runToken++; // 旧页面没了，作废在途结果
       if (state.observing) scheduleAuto();
+
+      /* SPA 换了页：新页面的语言可能跟上一页完全不同
+         （比如从中文首页点进一篇英文文章）。
+         之前只在进页面时判断一次语言，换页之后就不再判断了 ——
+         于是英文文章不会自动翻，中文文章反而可能被当成外文翻一遍。
+         这里重新判断一次；只在「这一页还没翻过」时动手，
+         免得把用户手动翻过的页面又翻一遍。 */
+      if (state.autoTranslateOn && !state.nodes.length && !state.busy) {
+        scheduleAutoRecheck();
+      }
     }
+  }
+
+  /* 换页后重新判断语言：等页面稳一下再判，否则拿到的是上一页的残留文字 */
+  let recheckTimer = null;
+  function scheduleAutoRecheck() {
+    if (recheckTimer) clearTimeout(recheckTimer);
+    recheckTimer = setTimeout(async () => {
+      recheckTimer = null;
+      if (!state.autoTranslateOn) return;
+      if (state.nodes.length || state.busy) return;
+      /* 已经在翻的页面别插队 */
+      try {
+        await maybeAutoTranslate({ autoTranslate: true, ...state.autoSettings });
+      } catch (_) {
+        /* 失败就算了 */
+      }
+    }, 1500);
   }
 
   let housekeepingTimer = setInterval(housekeeping, 3000);
