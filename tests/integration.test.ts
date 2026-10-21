@@ -1,10 +1,17 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { buildRequest, extractText } from '../src/core/protocol.js';
-import { resolveBase, detectProvider, checkConfigured, isLocalEndpoint } from '../src/core/provider.js';
+import { buildRequest, extractText, extractDelta } from '../src/core/protocol.js';
+import {
+  resolveBase,
+  detectProvider,
+  checkConfigured,
+  isLocalEndpoint,
+  normBase,
+  guessProtocol
+} from '../src/core/provider.js';
 import { isTargetLanguage } from '../src/core/detect.js';
-import { systemPrompt, systemPromptSingle } from '../src/core/prompt.js';
+import { systemPrompt, systemPromptSingle, parseMarked } from '../src/core/prompt.js';
 
 /**
  * 扩展脚本（src/extension/background.js）与共享核心（src/core/）的一致性测试。
@@ -62,7 +69,6 @@ async function loadBackgroundFns(): Promise<Record<string, any>> {
 
   /* new Function 的函数体是语句列表，必须显式 return 才有值 */
   const wrapped = `return (function(){ ${src}\n return { normBase, detectProvider, resolveBase, guessProtocol, protocolOrder, buildRequest, extractText, extractDelta, parseMarked, systemPrompt, systemPromptSingle, stripMarkers, configProblem, isLocalEndpoint }; })();`;
-
   const fn = new Function('chrome', 'fetch', 'console', wrapped);
   return fn(chromeStub, globalThis.fetch, console);
 }
@@ -206,6 +212,115 @@ describe('扩展脚本与共享核心的一致性', () => {
     const s = { targetLang: '简体中文', extraPrompt: '保持正式语气' };
     expect(bg.systemPrompt(s)).toBe(systemPrompt(s));
     expect(bg.systemPromptSingle(s)).toBe(systemPromptSingle(s));
+  });
+
+  /* 一次性把很多输入都过一遍，任何一边改了都会被抓到。
+     比逐条写用例更抗改动 —— 之前改提示词就漏了几条。 */
+  it('★ 批量输入下 resolveBase / detectProvider / guessProtocol 全部一致', () => {
+    const urls = [
+      'https://api.openai.com/v1',
+      'https://api.deepseek.com',
+      'https://api.deepseek.com/v1',
+      'https://open.bigmodel.cn',
+      'https://api.anthropic.com',
+      'https://generativelanguage.googleapis.com',
+      'https://generativelanguage.googleapis.com/v1beta',
+      'http://localhost:11434/v1',
+      'http://127.0.0.1:1234/v1',
+      'https://api.groq.com/openai/v1',
+      'https://openrouter.ai/api/v1',
+      'https://ark.cn-beijing.volces.com/api/v3',
+      'https://unknown-proxy.example.com/v1',
+      'not a url',
+      ''
+    ];
+    for (const u of urls) {
+      expect(bg.resolveBase(u), `resolveBase(${u})`).toBe(resolveBase(u));
+      expect(bg.normBase(u), `normBase(${u})`).toBe(normBase(u));
+      expect(bg.detectProvider(u)?.id ?? null, `detectProvider(${u})`).toBe(
+        detectProvider(u)?.id ?? null
+      );
+      for (const m of ['gpt-4o', 'claude-3-5-haiku', 'gemini-2.0-flash', '']) {
+        const s = { baseURL: u, model: m, protocol: 'auto' };
+        expect(bg.guessProtocol(s), `guessProtocol(${u}, ${m})`).toBe(guessProtocol(s));
+      }
+    }
+  });
+
+  it('★ 批量输入下 buildRequest 三种协议全部一致', () => {
+    const bases = [
+      'https://api.deepseek.com/v1',
+      'https://api.anthropic.com',
+      'https://generativelanguage.googleapis.com',
+      'https://generativelanguage.googleapis.com/v1',
+      'https://generativelanguage.googleapis.com/v1beta',
+      'https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash'
+    ];
+    const msgSets = [
+      [{ role: 'system' as const, content: '你是翻译' }, { role: 'user' as const, content: 'hi' }],
+      [{ role: 'user' as const, content: '只有用户消息' }],
+      [
+        { role: 'system' as const, content: [{ type: 'text' as const, text: '图片翻译' }] },
+        {
+          role: 'user' as const,
+          content: [
+            { type: 'text' as const, text: '看图' },
+            { type: 'image' as const, data: 'AAAA', mediaType: 'image/png' }
+          ] as any
+        }
+      ]
+    ];
+
+    for (const b of bases) {
+      for (const msgs of msgSets) {
+        const s = { baseURL: b, apiKey: 'k', model: 'm', temperature: 0.2 };
+        for (const p of ['openai', 'anthropic', 'gemini'] as const) {
+          expect(bg.buildRequest(p, s, msgs), `${p} ${b}`).toEqual(buildRequest(p, s, msgs));
+        }
+        /* 流式模式也要一致 */
+        expect(bg.buildRequest('openai', s, msgs, { stream: true }), 'stream').toEqual(
+          buildRequest('openai', s, msgs, { stream: true })
+        );
+      }
+    }
+  });
+
+  it('★ 批量输入下 extractText / extractDelta 全部一致', () => {
+    const samples: any[] = [
+      { choices: [{ message: { content: 'a' } }] },
+      { choices: [{ message: { content: [{ text: 'b' }] } }] },
+      { content: [{ type: 'text', text: 'c' }] },
+      { candidates: [{ content: { parts: [{ text: 'd' }] } }] },
+      { delta: { text: 'e' } },
+      { choices: [{ delta: { content: 'f' } }] },
+      { choices: [{ delta: { content: [{ text: 'g' }] } }] },
+      { nothing: true },
+      null,
+      'string'
+    ];
+    for (const s of samples) {
+      expect(bg.extractText(s), `extractText(${JSON.stringify(s)})`).toBe(extractText(s));
+      expect(bg.extractDelta(s), `extractDelta(${JSON.stringify(s)})`).toBe(extractDelta(s));
+    }
+  });
+
+  it('★ 批量输入下 parseMarked 全部一致', () => {
+    const replies = [
+      '<<<1>>>甲\n<<<2>>>乙',
+      '<<<1>>>甲',
+      '没有标记',
+      '<<<1>>><<<2>>>',
+      '<<<10>>>越界',
+      '<<<1>>>甲\n<<<1>>>乙',
+      ''
+    ];
+    for (const r of replies) {
+      for (const n of [0, 1, 2, 3]) {
+        expect(bg.parseMarked(r, n), `parseMarked(${JSON.stringify(r)}, ${n})`).toEqual(
+          parseMarked(r, n)
+        );
+      }
+    }
   });
 });
 
