@@ -27,9 +27,11 @@ const API = `https://api.github.com/repos/${REPO}`;
 /**
  * github.com 可用的 IP —— 这个网络环境里 DNS 给出的地址连不上 443，
  * 但 api.github.com 正常。可以用 MXT_GITHUB_IP 覆盖。
- * 注意：这条链路时好时坏，所以下面有重试。
+ * 注意：这条链路时好时坏，而且可用的 IP 会变（DNS 轮询 + 运营商路由），
+ * 所以下面有重试。换 IP 时先测：
+ *   curl -s -o NUL -w "%{http_code}" --resolve "github.com:443:<IP>" https://github.com
  */
-const RESOLVED_IP = process.env.MXT_GITHUB_IP || '20.27.177.113';
+const RESOLVED_IP = process.env.MXT_GITHUB_IP || '140.82.112.3';
 
 const token = process.argv[2];
 const branch = process.argv[3] || 'feature/p0-baseline';
