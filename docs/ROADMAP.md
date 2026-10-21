@@ -167,9 +167,36 @@ interface ImageRepairProvider {
   「共享核心缺少 checkEndpoint，请重新构建（npm run build）」
 - 收敛的正确顺序是**先接通、再删副本**：如果先删副本，扩展会在一段时间里彻底不能用
 
+### 第五轮（已完成）：提示词、术语表、标记解析收归核心
+
+- ✅ **删掉 `background.js` 里的第二份提示词** —— `stripMarkers`、`systemPrompt`、`systemPromptSingle`、
+  `looksTechnical`、`escapeRegExp`、`selectGlossaryEntries`、`glossaryInstruction`、`MARK_RE`、`parseMarked`
+  共 4575 字符的副本，替换为从 `MXTCore` 解构。留在原地的只有 `selectGlossary(settings, texts)` 这个
+  6 行的形状适配（把 settings 里的术语表摊平成核心要的入参）
+- ✅ **核心的提示词补上术语表参数** —— 原来只有 `background.js` 的副本支持注入术语，核心版签名的字典里
+  根本没有这个概念，所以「术语表进了提示词」这条只能靠比对两个副本才能验证。现在
+  `systemPrompt(s, glossaryEntries?)` / `systemPromptSingle(s, glossaryEntries?)` 是一等参数，
+  不传时行为与旧版逐字一致（缓存键因此不变，不会造成全量缓存失效）
+- ✅ **测试从「结果一致」改成「不许长出第二份」** —— `tests/glossary-consistency.test.ts` 原来按括号配平
+  把副本抠出来跑同一批输入；现在守的是三件事：`MXT_CORE` 解构里必须有这些名字、`background.js` 里
+  不许再出现 `function <name>(`、`selectGlossary` 薄包装不许包含 `toLowerCase`/`RegExp`
+  且不超过 8 行（真变厚了说明又抄回来了）
+- ✅ **术语表进提示词的验证落到核心层** —— 新增 4 条：批量与单段提示词都带上命中术语、无命中时
+  与不传术语时**逐字相同**、不传与传空数组等价
+
+### 第五轮发现
+
+- 「两份实现一致」的测试有个隐性代价：它让副本看起来是合法的。只要一致性测试还绿着，
+  就没人会去问「为什么这里要抄一份」。接线测试的问法是相反的——它假定副本不该存在
+- 术语段落不能用「提示词里有没有『术语』二字」来判断，因为规则 3 本来就写着「保持原文语气与术语统一」。
+  自我否定的断言比没有断言更浪费时间
+- 这一轮没有动 `splitInlineMarks`：它在 `content.js` 里，而内容脚本不能 `importScripts`。
+  要收敛得把核心打进内容脚本（或改构建产出只含所需模块的小包），代价是每个页面多解析一份代码，
+  得先测过注入开销再决定
+
 ### 下一轮该做
 
-1. 继续收敛：协议构造（`buildRequest`）、提示词与标记（`parseMarked` / `splitInlineMarks`）、术语表
+1. 继续收敛：协议构造（`buildRequest` / `extractText`）、`cacheKey`/`fnv`、内容脚本里的 `splitInlineMarks`
 2. 隐私政策 + 权限分层
 3. 任务取消 / 进度 / API 诊断细分
 
