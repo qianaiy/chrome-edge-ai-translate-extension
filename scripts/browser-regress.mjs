@@ -79,8 +79,18 @@ function splitMarked(text) {
 
 /** 只保留中文的译文，避免译文本身又被判成外文而反复补翻 */
 function fakeTranslation(src, i) {
+  /* 探针：模型偶尔会把内联标记原样吐回来。译文里带上 {{1}} 才能验证
+     「标记不会出现在页面上」这条断言真的起作用。 */
+  if (src.includes('INLINEMARK')) return '{{1}}标记泄漏探针译文。';
   return `【译${i}·${tagOf(src)}】自动测试译文。`;
 }
+
+/* 只用来验「模型把 {{1}} 原样吐回来时，页面上不能出现花括号标记」 */
+const PAGE_MARK = `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>regress-mark</title></head>
+<body>
+<main><p id="mark-p">INLINEMARK probe paragraph that the fake model answers with a stray inline marker.</p></main>
+</body></html>`;
 
 /** 框架重渲染测试里那一段的原文。PAGE_A 和后面的还原断言共用同一个常量，
     避免改了一处忘了另一处（以前就是因为这个断言和夹具各写各的才一直误报）。 */
@@ -159,7 +169,7 @@ const server = createServer((req, res) => {
     return;
   }
 
-  const html = url.startsWith('/spa') ? PAGE_SPA : PAGE_A;
+  const html = url.startsWith('/spa') ? PAGE_SPA : url.startsWith('/mark') ? PAGE_MARK : PAGE_A;
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(html);
 });
@@ -516,6 +526,29 @@ true;
   );
 
   await closePage(a.targetId);
+
+  /* ---------------- 页面 M：模型把 {{1}} 原样吐回来时，页面上不能出现标记 ---------------- */
+
+  const m = await openPage('/mark', '/mark');
+  await evalPopup(`__mxt.waitPing(${m.tid}, 15000)`);
+  await evalPopup(`chrome.tabs.sendMessage(${m.tid}, { type: 'mxt:togglePage', mode: 'full' })`);
+  const markState = await evalPopup(
+    `__mxt.wait(${m.tid}, s => s && s.ok && s.translated > 0 && !s.busy, 30000)`
+  );
+  check('探针页翻译完成', markState.ok === true, JSON.stringify(markState.last).slice(0, 120));
+
+  const markDump = await m.evaluate(`(() => {
+    const trans = [];
+    document.querySelectorAll('.mxt-trans').forEach(d => trans.push(d.textContent));
+    return { trans, body: document.body.innerText };
+  })()`);
+  check('探针页确实产生了译文', markDump.trans.length > 0, JSON.stringify(markDump.trans).slice(0, 120));
+  check(
+    '译文不泄漏 {{n}} 内联标记',
+    !/\{\{\s*\d+\s*\}\}/.test(markDump.trans.join(' ') + ' ' + markDump.body),
+    JSON.stringify(markDump.trans).slice(0, 120)
+  );
+  await closePage(m.targetId);
 
   /* ---------------- 页面 B：SPA 换页后自动翻译 ---------------- */
 

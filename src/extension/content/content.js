@@ -1258,6 +1258,18 @@
       .trim();
   }
 
+  /* 没有 parts 的块，请求里本来就不该出现 {{n}}，模型自己加的就是噪声：
+     原样画到页面上会变成「{{1}}译文」这种极显眼的垃圾。但原文里本来就写着的
+     {{n}}（示例代码、模板占位）得留着，那是内容的一部分。 */
+  function stripStrayInlineMarks(text, sourceText) {
+    const src = String(sourceText || '');
+    const inSource = num => new RegExp('\\{\\{\\s*' + num + '\\s*\\}\\}').test(src);
+    return String(text || '')
+      .replace(/\{\{\s*(\d+)\s*\}\}/g, (whole, num) => (inSource(num) ? whole : ''))
+      .replace(/[ \t]{2,}/g, ' ')
+      .trim();
+  }
+
   function splitInlineMarks(text, count) {
     const s = String(text || '');
     /* count 为 0 时后面 found[0] 会越界，直接返回空数组 */
@@ -1350,7 +1362,6 @@
   function insertTranslation(el, text, token, inside, parts, opts) {
     if (token !== undefined && token !== runToken) return; // 已经还原/重来了，迟到的译文丢掉
     const partial = !!(opts && opts.partial);
-    const plain = parts ? stripInlineMarks(text) : text;
     /* 换字目标必须在插入译文节点之前算好：
        swapTargetOf() 靠 children.length 判断「这个块是不是只有一个 <a>」，
        要是译文 div 已经插进去了，<li><a>News</a></li> 就认不出 <a>，
@@ -1359,6 +1370,7 @@
     /* 记下「翻译前的原文」：框架（React 等）更新内容时会把文字顶回原文，
        拿这个对比就能发现「被顶回去了」，好把它作废、重新翻译。 */
     const origText = ownText(target);
+    const plain = parts ? stripInlineMarks(text) : stripStrayInlineMarks(text, origText);
     const div = document.createElement('div');
     div.className = 'mxt-trans';
     div.setAttribute('data-mxt', '1');
