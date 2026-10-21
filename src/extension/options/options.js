@@ -226,11 +226,22 @@ async function refreshDetection() {
 
   if (!res || !res.ok) return '';
 
+  /* 地址本身不可信时，先说这个问题 —— 其余信息（识别成哪家、协议）都不重要了 */
+  const policy = res.endpoint;
+  if (policy && !policy.ok) {
+    el.className = 'hint bad';
+    el.textContent = policy.message;
+    return '';
+  }
+
   el.className = 'hint good';
   if (res.known) {
     el.textContent = `识别为 ${res.providerName} · ${res.protocolLabel} · 实际请求 ${res.baseURL}`;
   } else {
     el.textContent = `没认出来是哪家，按 ${res.protocolLabel} 协议请求 ${res.baseURL}`;
+  }
+  if (policy && policy.local) {
+    el.textContent += '（本机/局域网地址，允许明文 http）';
   }
   return res.baseURL;
 }
@@ -809,6 +820,23 @@ $('clearCache').addEventListener('click', async () => {
   await chrome.runtime.sendMessage({ type: 'mxt:clearCache' });
   setResult('翻译缓存和协议记忆已清空', 'ok');
   setTimeout(() => setResult('', ''), 2000);
+});
+
+$('clearAll').addEventListener('click', async () => {
+  /* 不可逆，问一次。用户可能只是想把缓存清掉，别让一顺手点错把 Key 也删了 */
+  if (!confirm('确定清除全部数据？接口地址、API Key、模型选择、译文缓存都会被抹掉，回到刚装好的状态。')) {
+    return;
+  }
+  const btn = $('clearAll');
+  btn.disabled = true;
+  try {
+    await chrome.runtime.sendMessage({ type: 'mxt:clearAll' });
+    setResult('已清除全部数据，页面会自动刷新', 'ok');
+    setTimeout(() => location.reload(), 600);
+  } catch (e) {
+    setResult('清除失败：' + (e?.message || e), 'bad');
+    btn.disabled = false;
+  }
 });
 
 load();

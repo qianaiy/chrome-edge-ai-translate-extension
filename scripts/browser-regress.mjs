@@ -546,6 +546,65 @@ true;
 
   await closePage(b.targetId);
 
+  /* ---------------- 设置页：地址信任边界 ---------------- */
+
+  /* 这三条走的是真实链路：options.html 输入 → mxt:detect → 后台 checkEndpoint → 提示文字 */
+  const extPage = async path => {
+    const { targetId } = await browser.send('Target.createTarget', {
+      url: `chrome-extension://${loaded.id}/${path}`
+    });
+    const session = (await browser.send('Target.attachToTarget', {
+      targetId,
+      flatten: true
+    })).sessionId;
+    await browser.send('Runtime.enable', {}, session);
+    const evaluate = async expr => {
+      const r = await browser.send(
+        'Runtime.evaluate',
+        { expression: expr, awaitPromise: true, returnByValue: true },
+        session
+      );
+      if (r.exceptionDetails) {
+        throw new Error(r.exceptionDetails.exception?.description || 'evaluate 抛错');
+      }
+      return r.result.value;
+    };
+    return { targetId, session, evaluate };
+  };
+
+  const opt = await extPage('options/options.html');
+  await sleep(900); // 等 load() 把已存配置填进输入框，别和它抢
+
+  const setBase = async value => {
+    await opt.evaluate(`(() => {
+      const el = document.getElementById('baseURL');
+      el.value = ${JSON.stringify(value)};
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      return true;
+    })()`);
+    await sleep(900); // 输入有防抖
+    return opt.evaluate(`document.getElementById('detected').textContent`);
+  };
+
+  const remoteHttp = await setBase('http://example.com/v1');
+  check(
+    '设置页拦下公网明文地址',
+    /https/.test(remoteHttp) && !/识别为|没认出来/.test(remoteHttp),
+    remoteHttp
+  );
+
+  const credInUrl = await setBase('https://user:pass@example.com/v1');
+  check('设置页拦下把 Key 写进地址', credInUrl.includes('API Key 输入框'), credInUrl);
+
+  const lanHttp = await setBase(`http://127.0.0.1:${server.address().port}/v1`);
+  check(
+    '本机地址放行并标注明文',
+    (lanHttp.includes('本机') || lanHttp.includes('局域网')) && lanHttp.includes('实际请求'),
+    lanHttp
+  );
+
+  await browser.send('Target.closeTarget', { targetId: opt.targetId }).catch(() => {});
+
   /* 收尾 */
   const failed = checks.filter(c => !c.ok);
   console.log(`\n[${label}] ${checks.length - failed.length}/${checks.length} 通过`);
