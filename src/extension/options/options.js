@@ -38,6 +38,60 @@ const BOOLS = ['autoDynamic', 'showFab', 'autoTranslate'];
    「保存」按钮仍然保留 —— 它现在只是把整个表单写一遍（比如批量改完多个字段）。 */
 const INSTANT = [...BOOLS, 'targetLang', 'displayMode', 'autoTranslateMinChars'];
 
+/* ---------------- 术语表 ---------------- */
+
+/** 解析术语表文本：「原文 = 译法」，行尾 @technical 表示只在技术内容里生效 */
+function parseGlossary(text) {
+  const entries = [];
+  const lines = String(text || '')
+    .split(/\r?\n/)
+    .map(l => l.trim())
+    .filter(Boolean);
+  for (const line of lines) {
+    const i = line.indexOf('=');
+    if (i <= 0) continue;
+    const source = line.slice(0, i).trim();
+    let target = line.slice(i + 1).trim();
+    if (!source || !target) continue;
+    let scope = 'global';
+    /* 行尾的 @technical / @global */
+    const m = target.match(/\s*@(technical|global)\s*$/i);
+    if (m) {
+      scope = m[1].toLowerCase();
+      target = target.slice(0, m.index).trim();
+    }
+    if (!target) continue;
+    entries.push({ source, target, scope, match: 'case-insensitive' });
+  }
+  return entries;
+}
+
+/** 术语表 → 文本 */
+function formatGlossary(glossary) {
+  if (!glossary || !Array.isArray(glossary.entries)) return '';
+  return glossary.entries
+    .map(e => {
+      const scope = e.scope === 'technical' ? ' @technical' : '';
+      return `${e.source} = ${e.target}${scope}`;
+    })
+    .join('\n');
+}
+
+/** 术语表版本：内容变了版本就变，缓存自动失效 */
+function glossaryVersion(entries) {
+  return fnv(entries.map(e => `${e.source}=${e.target}:${e.scope || 'global'}`).join('|'));
+}
+
+/** FNV-1a（跟后台一致） */
+function fnv(str) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(36) + '-' + str.length.toString(36);
+}
+
 /** 把当前表单写进 storage（只改传进来的字段，不动别的） */
 async function patchSettings(patch) {
   const { settings } = await chrome.storage.local.get('settings');
@@ -67,6 +121,10 @@ function readForm() {
   }
   out.temperature = Math.min(2, Math.max(0, Number(out.temperature) || 0));
   out.autoTranslateMinChars = Math.max(0, Math.min(100000, Number(out.autoTranslateMinChars) || 0));
+  /* 术语表：解析成结构，同时记下版本号（内容变了版本就变） */
+  const entries = parseGlossary($('glossary') ? $('glossary').value : '');
+  out.glossary = entries.length ? { entries } : null;
+  out.glossaryVersion = entries.length ? glossaryVersion(entries) : '';
   return out;
 }
 
@@ -79,6 +137,8 @@ function writeForm(settings) {
     const el = $(b);
     if (el) el.checked = (settings[b] ?? DEFAULTS[b]) !== false;
   }
+  const gl = $('glossary');
+  if (gl) gl.value = formatGlossary(settings.glossary);
 }
 
 function setResult(text, kind) {
@@ -706,6 +766,25 @@ for (const f of ['targetLang', 'displayMode', 'autoTranslateMinChars']) {
     setTimeout(() => setResult('', ''), 1500);
   });
   el.addEventListener('change', save);
+}
+
+/* 术语表：改完就存（防抖，打字过程中不反复写）。
+   存的时候要同时更新版本号 —— 术语变了，旧的翻译缓存就该失效。 */
+{
+  const el = $('glossary');
+  if (el) {
+    const save = debounce(async () => {
+      const entries = parseGlossary(el.value);
+      const version = entries.length ? glossaryVersion(entries) : '';
+      await patchSettings({
+        glossary: entries.length ? { entries } : null,
+        glossaryVersion: version
+      });
+      setResult(entries.length ? `已生效（${entries.length} 条术语）` : '已生效', 'ok');
+      setTimeout(() => setResult('', ''), 1500);
+    }, 600);
+    el.addEventListener('input', save);
+  }
 }
 
 $('test').addEventListener('click', async () => {

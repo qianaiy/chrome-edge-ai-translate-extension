@@ -22,7 +22,9 @@ const DEFAULTS = {
   displayMode: 'bilingual',
   showFab: true,
   autoTranslate: false, // 打开网页时自动翻译非目标语言的页面
-  autoTranslateMinChars: 200 // 文字太少的页面不自动翻（多半是登录页、报错页）
+  autoTranslateMinChars: 200, // 文字太少的页面不自动翻（多半是登录页、报错页）
+  glossary: null, // 术语表：{ entries: [...], version: '...' }
+  glossaryVersion: '' // 术语表版本号，改了就该让旧缓存失效
 };
 
 const PROTOCOLS = ['openai', 'anthropic', 'gemini'];
@@ -50,7 +52,19 @@ let memCache = null;
 let flushTimer = null;
 
 function cacheKey(settings, text) {
-  return fnv(`${settings.model}|${settings.targetLang}|${text}`);
+  /* 键里必须带上「影响译文的那些设置」——
+     只用原文做键的话，用户改了提示词、换了模型、加了术语表之后，
+     还是命中旧译文，看到的老译文只会让人以为「改了没生效」。 */
+  return fnv(
+    [
+      settings.model || '',
+      settings.targetLang || '',
+      systemPrompt(settings),
+      settings.extraPrompt || '',
+      settings.glossaryVersion || '',
+      text || ''
+    ].join('\u0001')
+  );
 }
 
 function fnv(str) {
@@ -940,7 +954,7 @@ function stripMarkers(text) {  return String(text || '')
     .trim();
 }
 
-function systemPromptSingle(s) {
+function systemPromptSingle(s, glossaryEntries) {
   const extra = String(s.extraPrompt || '').trim();
   const lines = [
     `你是专业翻译。把用户给出的一段文本翻译成${s.targetLang}。`,
@@ -949,12 +963,73 @@ function systemPromptSingle(s) {
     '若原文已是目标语言，直接原样输出。'
   ];
   if (extra) lines.push(`额外要求：${extra}`);
+  const gl = glossaryInstruction(glossaryEntries);
+  if (gl) lines.push(gl);
   return lines.join('\n');
+}
+
+/* ------------------------- 术语表 ------------------------- */
+
+/* 术语表相关的纯逻辑跟 src/core/cache.ts 保持一致，
+   tests/integration.test.ts 会验证两边行为相同。 */
+
+/** 判断一段内容算不算「技术类」 */
+function looksTechnical(text) {
+  const s = String(text || '');
+  if (!s.trim()) return false;
+  return (
+    /[{}<>]/.test(s) ||
+    /\b(?:const|let|var|function|return|import|export|class|def|async|await|public|private|static)\b/.test(s) ||
+    /\b\w+\([^)]*\)/.test(s) ||
+    /\b[a-z]+_[a-z]+\b/.test(s) ||
+    /https?:\/\//.test(s) ||
+    /=>|::|\$[A-Za-z_]/.test(s) ||
+    /\b(?:npm|yarn|pnpm|git|docker|kubectl|curl|apt|pip|node|python|api|json|xml|yaml|sql|html|css|javascript|typescript|py|go|rust|java)\b/i.test(
+      s
+    )
+  );
+}
+
+function escapeRegExp(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/** 从术语表里挑出这一批文本该用的术语 */
+function selectGlossaryEntries(glossary, text, scope) {
+  if (!glossary || !Array.isArray(glossary.entries) || !glossary.entries.length) return [];
+  const s = String(text || '');
+  if (!s) return [];
+  const tech = scope === 'technical' || looksTechnical(s);
+  const hits = [];
+
+  for (const e of glossary.entries) {
+    if (!e || !e.source || !e.target) continue;
+    if (e.scope === 'technical' && !tech) continue;
+    const match = e.match || 'case-insensitive';
+    let found = false;
+    if (match === 'exact') {
+      found = s.includes(e.source);
+    } else if (match === 'word') {
+      found = new RegExp(`\\b${escapeRegExp(e.source)}\\b`, 'i').test(s);
+    } else {
+      found = s.toLowerCase().includes(e.source.toLowerCase());
+    }
+    if (found) hits.push(e);
+  }
+  hits.sort((a, b) => (b.priority || 0) - (a.priority || 0));
+  return hits;
+}
+
+/** 把命中的术语整理成能拼进系统提示词的一段话 */
+function glossaryInstruction(entries) {
+  if (!entries || !entries.length) return '';
+  const lines = entries.map(e => `- ${e.source} → ${e.target}`);
+  return ['以下是本批文本中必须用到的术语（只译这些词，其余照常翻译）：', ...lines].join('\n');
 }
 
 /* ------------------------- 提示词 ------------------------- */
 
-function systemPrompt(s) {
+function systemPrompt(s, glossaryEntries) {
   const extra = String(s.extraPrompt || '').trim();
   const lines = [
     `你是专业翻译。把用户给出的每一段文本翻译成${s.targetLang}。`,
@@ -969,7 +1044,22 @@ function systemPrompt(s) {
     '8. 原文里形如 {{1}}、{{2}} 的标记表示分段位置，必须原样保留、顺序不变，只翻译标记后面的文字。'
   ];
   if (extra) lines.push(`额外要求：${extra}`);
+
+  /* 术语表：只把这一批命中的术语告诉模型，不塞整本词典。
+     用「约束」而不是「替换」—— 同一个词在不同语境下译法不同，
+     硬替换会把对的译文改错。 */
+  const gl = glossaryInstruction(glossaryEntries);
+  if (gl) lines.push(gl);
+
   return lines.join('\n');
+}
+
+/** 从术语表里挑出这一批文本该用的术语 */
+function selectGlossary(settings, texts) {
+  const g = settings && settings.glossary;
+  if (!g || !Array.isArray(g.entries) || !g.entries.length) return [];
+  const joined = (Array.isArray(texts) ? texts : [texts]).join('\n');
+  return selectGlossaryEntries(g, joined);
 }
 
 /* ------------------------- 标记解析 ------------------------- */
@@ -994,8 +1084,10 @@ function parseMarked(text, count) {
 
 async function translateChunk(list, settings) {
   const payload = list.map((t, i) => `<<<${i + 1}>>>${t}`).join('\n');
+  /* 这一批命中的术语 */
+  const gl = selectGlossary(settings, list);
   const { text: raw } = await chat(settings, [
-    { role: 'system', content: systemPrompt(settings) },
+    { role: 'system', content: systemPrompt(settings, gl) },
     { role: 'user', content: payload }
   ]);
 
@@ -1018,7 +1110,7 @@ async function translateChunk(list, settings) {
     for (const i of missing) {
       try {
         const { text: one } = await chat(settings, [
-          { role: 'system', content: systemPrompt(settings) },
+          { role: 'system', content: systemPrompt(settings, selectGlossary(settings, [list[i]])) },
           { role: 'user', content: `<<<1>>>${list[i]}` }
         ]);
         const v = parseMarked(one, 1)[0];
@@ -1742,7 +1834,7 @@ chrome.runtime.onConnect.addListener(port => {
         const { text, protocol } = await chatStream(
           settings,
           [
-            { role: 'system', content: systemPromptSingle(settings) },
+            { role: 'system', content: systemPromptSingle(settings, selectGlossary(settings, trimmed)) },
             { role: 'user', content: trimmed }
           ],
           delta => reply({ type: 'delta', text: delta })
@@ -1789,7 +1881,7 @@ chrome.runtime.onConnect.addListener(port => {
       const { text, protocol } = await chatStream(
         settings,
         [
-          { role: 'system', content: systemPrompt(settings) },
+          { role: 'system', content: systemPrompt(settings, selectGlossary(settings, pending.map(p => p.src))) },
           { role: 'user', content: payload }
         ],
         delta => reply({ type: 'delta', text: delta })

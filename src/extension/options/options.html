@@ -407,6 +407,19 @@
       </div>
 
       <div class="card">
+        <h2>术语表</h2>
+        <div class="field">
+          <label for="glossary">指定术语的固定译法（一行一条）</label>
+          <textarea id="glossary" rows="6" placeholder="service worker = 服务工作线程&#10;Shadow DOM = Shadow DOM&#10;mod = 模组"></textarea>
+        </div>
+        <div class="hint">
+          命中的术语会作为约束告诉模型（只发这一批文本里出现的，不塞整本词典）。<br />
+          行内用 <code>=</code> 分隔原文和译法；<code>原文 = 译法 @technical</code> 表示只在技术类内容里生效。<br />
+          改完术语表后，翻译缓存会自动失效（不会拿旧译文糊弄你）。
+        </div>
+      </div>
+
+      <div class="card">
         <h2>操作</h2>
         <div class="actions">
           <button class="primary" id="save">保存全部</button>

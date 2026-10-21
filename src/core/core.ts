@@ -80,10 +80,27 @@ export {
   eraseAll,
   readableColor,
   toCss,
+  estimateTextWidth,
+  fitText,
   type Box,
   type RGBA,
-  type PixelBuffer
+  type PixelBuffer,
+  type FitResult
 } from './inpaint.js';
+
+export {
+  fnv,
+  cacheKeyParts,
+  translationCacheKey,
+  selectGlossaryEntries,
+  glossaryInstruction,
+  checkGlossary,
+  looksTechnical,
+  type CacheKeyInput,
+  type Glossary,
+  type GlossaryEntry,
+  type GlossaryMatch
+} from './cache.js';
 
 export {
   scoreTranslation,

@@ -220,6 +220,141 @@ export function toCss(c: RGBA): string {
   return `rgb(${c.r}, ${c.g}, ${c.b})`;
 }
 
+/* ------------------------------------------------------------------ *
+ * 译文排版
+ * ------------------------------------------------------------------ */
+
+/** 一个字在给定字号下大概多宽（相对字号的倍数）。
+ *  中日文一个字约等于字号宽度；拉丁字母平均约 0.55 倍。
+ *  纯估算，不依赖字体度量，但足够用来决定字号和要不要换行。 */
+export function estimateTextWidth(text: string, fontSize: number): number {
+  let units = 0;
+  for (const ch of String(text || '')) {
+    const c = ch.codePointAt(0)!;
+    if (c < 0x41) continue; // 空格和标点不算宽度
+    if (c >= 0x4e00 && c <= 0x9fff) units += 1; // 汉字
+    else if (c >= 0x3040 && c <= 0x30ff) units += 1; // 假名
+    else if (c >= 0xac00 && c <= 0xd7af) units += 1; // 谚文
+    else units += 0.55; // 拉丁字母等
+  }
+  return units * fontSize;
+}
+
+export interface FitResult {
+  /** 最终字号 */
+  fontSize: number;
+  /** 排成几行 */
+  lines: string[];
+  /** 估算的总高度 */
+  height: number;
+  /** 有没有缩到比最小字号还小 */
+  shrunk: boolean;
+}
+
+/**
+ * 把译文塞进原文字的框里。
+ *
+ * 漫画里常见的是「原文很短、译文很长」——
+ * 英文一句话翻成中文可能长一倍多，塞不下就会溢出气泡，
+ * 盖住旁边的画面。
+ *
+ * 做法：
+ *   1. 先按框高算一个理想字号
+ *   2. 试着放进框宽，放不下就缩字号
+ *   3. 缩到最小字号还放不下，就按框宽折行，行数不能超过框高能容纳的
+ *   4. 实在放不下就截断加省略号 —— 宁可少显示，也不能画到框外面去
+ */
+export function fitText(
+  text: string,
+  boxWidth: number,
+  boxHeight: number,
+  opts: { minFontSize?: number; maxFontSize?: number; lineHeight?: number; maxLines?: number } = {}
+): FitResult {
+  const minFont = Math.max(8, opts.minFontSize ?? 10);
+  const maxFont = Math.max(minFont, opts.maxFontSize ?? 34);
+  const lineHeight = opts.lineHeight ?? 1.22;
+  const src = String(text || '').trim();
+
+  if (!src) return { fontSize: minFont, lines: [''], height: 0, shrunk: false };
+
+  const w = Math.max(1, boxWidth);
+  const h = Math.max(1, boxHeight);
+  const maxLines = Math.max(1, opts.maxLines ?? Math.max(1, Math.floor(h / (minFont * lineHeight))));
+
+  /* 理想字号：跟着框高走 */
+  let fontSize = Math.min(maxFont, Math.max(minFont, Math.round(h * 0.72)));
+
+  const linesFor = (size: number): string[] => {
+    const perLine = Math.max(1, Math.floor(w / size));
+    /* 先按词断（拉丁文），断不了就按字断（中日文） */
+    const out: string[] = [];
+    let cur = '';
+    let units = 0;
+    const words = src.match(/\S+\s*|\s+/g) || [];
+    const hasSpaces = /\s/.test(src);
+
+    for (const word of words) {
+      const wu = estimateTextWidth(word, 1) / 1; // 以「一个字号宽」为单位
+      if (units + wu > perLine && cur) {
+        out.push(cur.trimEnd());
+        cur = '';
+        units = 0;
+      }
+      if (wu > perLine) {
+        /* 单个词就超宽（长英文单词或一整段没空格的中文）：按字切 */
+        let piece = '';
+        let pu = 0;
+        for (const ch of word) {
+          const cu = estimateTextWidth(ch, 1);
+          if (pu + cu > perLine && piece) {
+            out.push(piece);
+            piece = '';
+            pu = 0;
+          }
+          piece += ch;
+          pu += cu;
+        }
+        cur = piece;
+        units = pu;
+      } else {
+        cur += word;
+        units += wu;
+      }
+    }
+    if (cur.trim()) out.push(cur.trimEnd());
+    void hasSpaces;
+    return out.length ? out : [''];
+  };
+
+  let lines = linesFor(fontSize);
+  let shrunk = false;
+
+  /* 放不下就缩字号 */
+  while (
+    fontSize > minFont &&
+    (lines.length > maxLines || lines.reduce((a, l) => a + estimateTextWidth(l, fontSize), 0) > w * 1.02)
+  ) {
+    fontSize -= 1;
+    lines = linesFor(fontSize);
+    shrunk = true;
+  }
+
+  /* 还是太长：截断 */
+  if (lines.length > maxLines) {
+    lines = lines.slice(0, maxLines);
+    const last = lines[maxLines - 1];
+    lines[maxLines - 1] = last.length > 1 ? last.slice(0, -1) + '…' : last;
+    shrunk = true;
+  }
+
+  return {
+    fontSize,
+    lines,
+    height: lines.length * fontSize * lineHeight,
+    shrunk
+  };
+}
+
 /**
  * 给一个文字区域挑一个可读的前景色。
  * 背景深就用浅字，背景浅就用深字。
