@@ -1218,6 +1218,8 @@
 
   function splitInlineMarks(text, count) {
     const s = String(text || '');
+    /* count 为 0 时后面 found[0] 会越界，直接返回空数组 */
+    if (count <= 0) return count === 0 ? [] : null;
     const found = [];
     INLINE_MARK.lastIndex = 0;
     let m;
@@ -1225,6 +1227,12 @@
       found.push({ k: Number(m[1]), at: m.index, end: m.index + m[0].length });
     }
     if (found.length !== count) return null; // 模型没保住标记，走兜底
+    /* 编号必须在 1..count 之内。模型偶尔会把编号写成 2,3,4（以为从 1 开始数），
+       这时 found.length 刚好等于 count，但 k-1 会越界写数组，
+       把后面几段的内容挤到错误的位置上。 */
+    for (const f of found) {
+      if (!Number.isInteger(f.k) || f.k < 1 || f.k > count) return null;
+    }
     const out = new Array(count).fill('');
     /* 第一个标记前面的内容（比如模型自己加的前缀）不能丢，
        接到第一段文字前面，不然这段就没被翻译 */

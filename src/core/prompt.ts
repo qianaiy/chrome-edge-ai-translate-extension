@@ -66,3 +66,48 @@ export function stripMarkers(text: string): string {
     .replace(/^\s*<<<\s*\d+\s*>>>\s*/, '')
     .trim();
 }
+
+export const INLINE_MARK = /\{\{\s*(\d+)\s*\}\}/g;
+
+/**
+ * 按 {{k}} 标记把译文切回各个文本节点。
+ *
+ * 段落里有链接/加粗时，扩展会先用 {{1}} {{2}} 标出每个文本节点的位置，
+ * 模型照着保留，回来就能按位置分配 —— 这样 <a>、<b> 这些结构原样留着。
+ *
+ * @param text  模型返回的译文
+ * @param count 文本节点的数量
+ * @returns 长度恒为 count 的数组；标记对不上时返回 null（调用方应退回逐条重译）
+ */
+export function splitInlineMarks(text: string, count: number): (string | null)[] | null {
+  const s = String(text || '');
+  if (count <= 0) return count === 0 ? [] : null;
+
+  const found: { k: number; at: number; end: number }[] = [];
+  INLINE_MARK.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = INLINE_MARK.exec(s)) !== null) {
+    found.push({ k: Number(m[1]), at: m.index, end: m.index + m[0].length });
+  }
+  if (found.length !== count) return null; // 模型没保住标记，走兜底
+
+  /* 编号必须在 1..count 之内。模型偶尔会把编号写成 2,3,4（以为从 1 开始数），
+     这时标记数量刚好等于 count，但 k-1 会越界写数组，
+     把后面几段的内容挤到错误的位置上。 */
+  for (const f of found) {
+    if (!Number.isInteger(f.k) || f.k < 1 || f.k > count) return null;
+  }
+
+  const out: (string | null)[] = new Array(count).fill('');
+  /* 第一个标记前面的内容（比如模型自己加的前缀）不能丢，
+     接到第一段文字前面，不然这段就没被翻译 */
+  const head = s.slice(0, found[0].at);
+  for (let i = 0; i < found.length; i++) {
+    const start = found[i].end;
+    const stop = i + 1 < found.length ? found[i + 1].at : s.length;
+    let seg = s.slice(start, stop);
+    if (i === 0 && head) seg = head + seg;
+    out[found[i].k - 1] = seg;
+  }
+  return out;
+}

@@ -44,6 +44,8 @@ export {
   systemPromptSingle,
   parseMarked,
   stripMarkers,
+  splitInlineMarks,
+  INLINE_MARK,
   MARK_RE
 } from './prompt.js';
 
@@ -80,3 +82,20 @@ export {
   type RGBA,
   type PixelBuffer
 } from './inpaint.js';
+
+export {
+  scoreTranslation,
+  summarize,
+  parseModelOutput,
+  effectiveLength,
+  lengthRatio,
+  stripCodeFence,
+  LENGTH_RATIO_MIN,
+  LENGTH_RATIO_MAX,
+  LENGTH_RATIO_MIN_SOURCE,
+  type EvalCase,
+  type CaseScore,
+  type Summary,
+  type CheckResult,
+  type CategorySummary
+} from './eval.js';
