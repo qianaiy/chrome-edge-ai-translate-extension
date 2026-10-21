@@ -65,3 +65,18 @@ export {
   type Script,
   type LangSample
 } from './detect.js';
+
+export {
+  boxToPixels,
+  adaptivePad,
+  getPixel,
+  setPixel,
+  estimateBackground,
+  eraseBox,
+  eraseAll,
+  readableColor,
+  toCss,
+  type Box,
+  type RGBA,
+  type PixelBuffer
+} from './inpaint.js';

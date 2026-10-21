@@ -26,7 +26,8 @@
     images: [], // 找到的漫画图
     index: 0, // 当前翻到第几张
     done: new Map(), // img -> { items, at }
-    busy: false
+    busy: false,
+    mode: 'inpaint' // 'inpaint' = 擦字重绘 | 'overlay' = 浮层覆盖
   };
 
   /* ---------------- 找漫画图 ---------------- */
@@ -127,7 +128,11 @@
     prog.className = 'mxt-comic-prog';
     const again = document.createElement('button');
     again.textContent = '重翻本张';
-    bar.append(prog, again);
+    const modeBtn = document.createElement('button');
+    modeBtn.className = 'mxt-comic-mode';
+    modeBtn.textContent = '擦字版';
+    modeBtn.title = '切换：擦字重绘 / 浮层覆盖';
+    bar.append(prog, modeBtn, again);
 
     const body = document.createElement('div');
     body.className = 'mxt-comic-body';
@@ -140,6 +145,17 @@
     prev.addEventListener('click', () => step(-1));
     next.addEventListener('click', () => step(1));
     again.addEventListener('click', () => translateCurrent(true));
+    modeBtn.addEventListener('click', () => {
+      state.mode = state.mode === 'inpaint' ? 'overlay' : 'inpaint';
+      modeBtn.textContent = state.mode === 'inpaint' ? '擦字版' : '浮层版';
+      /* 切模式后把当前这张重画一遍 */
+      const img = state.images[state.index];
+      if (img) {
+        const rec = state.done.get(img);
+        clearOverlays();
+        if (rec) applyToImage(img, rec.items);
+      }
+    });
 
     (document.body || document.documentElement).appendChild(h);
     return h;
@@ -262,6 +278,194 @@
     }
   }
 
+  /* ---------------- 擦字 + 背景修复 ---------------- */
+
+  /* 画一版「擦掉原文、画上译文」的图。
+     原来的做法是把译文盖成浮层，原文还在底下透出来，两个字叠在一起很难看。
+     这里改成：先按模型给的文字位置把原文擦掉（用周围底色填），
+     再把译文直接画在那个位置——跟原生汉化漫画的做法一样。 */
+
+  /** 把图片画进 canvas，取出像素 */
+  function readPixels(img) {
+    const canvas = document.createElement('canvas');
+    canvas.width = img.naturalWidth;
+    canvas.height = img.naturalHeight;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return null;
+    ctx.drawImage(img, 0, 0);
+    let data;
+    try {
+      data = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    } catch (_) {
+      return null; // 跨域
+    }
+    return { canvas, ctx, buf: { width: data.width, height: data.height, data: data.data } };
+  }
+
+  /** 估算背景色：取框外一圈像素的中位色 */
+  function estimateBackground(buf, x1, y1, x2, y2) {
+    const band = Math.max(2, Math.round(Math.min(x2 - x1, y2 - y1) * 0.12));
+    const rs = [], gs = [], bs = [];
+    const push = (x, y) => {
+      if (x < 0 || y < 0 || x >= buf.width || y >= buf.height) return;
+      const i = (y * buf.width + x) * 4;
+      rs.push(buf.data[i]); gs.push(buf.data[i + 1]); bs.push(buf.data[i + 2]);
+    };
+    for (let x = x1; x < x2; x++) for (let d = 0; d < band; d++) { push(x, y1 - 1 - d); push(x, y2 + d); }
+    for (let y = y1; y < y2; y++) for (let d = 0; d < band; d++) { push(x1 - 1 - d, y); push(x2 + d, y); }
+    if (!rs.length) {
+      for (let y = y1; y < y2; y++) for (let x = x1; x < x2; x++) {
+        const i = (y * buf.width + x) * 4;
+        rs.push(buf.data[i]); gs.push(buf.data[i + 1]); bs.push(buf.data[i + 2]);
+      }
+    }
+    if (!rs.length) return { r: 255, g: 255, b: 255, a: 255 };
+    const med = arr => { arr.sort((a, b) => a - b); return arr[Math.floor(arr.length / 2)]; };
+    return { r: med(rs), g: med(gs), b: med(bs), a: 255 };
+  }
+
+  /** 擦掉框里的文字：按「和背景色的差距」加权混合，保留渐变和纹理 */
+  function eraseBox(buf, x1, y1, x2, y2, bg) {
+    const w = x2 - x1, h = y2 - y1;
+    if (w <= 0 || h <= 0) return;
+    const feather = Math.max(1, Math.round(Math.min(w, h) * 0.12));
+    for (let y = y1; y < y2; y++) {
+      for (let x = x1; x < x2; x++) {
+        if (x < 0 || y < 0 || x >= buf.width || y >= buf.height) continue;
+        const i = (y * buf.width + x) * 4;
+        const cr = buf.data[i], cg = buf.data[i + 1], cb = buf.data[i + 2];
+        const diff = Math.abs(cr - bg.r) + Math.abs(cg - bg.g) + Math.abs(cb - bg.b);
+        const t = Math.min(1, diff / 255);
+        /* 差得很少的才算底色；抗锯齿边缘要一起擦掉，不然留残影 */
+        if (t < 0.015) continue;
+        const edge = Math.min(x - x1, x2 - 1 - x, y - y1, y2 - 1 - y);
+        const fw = edge >= feather ? 1 : edge / feather;
+        /* 差得越多替换越彻底；底色附近只轻轻带一下。
+           指数小于 1，让「差一点点」的抗锯齿边缘也擦得掉 —— 不然会留淡淡的残影。 */
+        const k = Math.min(1, Math.pow(t, 0.45)) * (0.7 + 0.3 * fw);
+        buf.data[i] = cr + (bg.r - cr) * k;
+        buf.data[i + 1] = cg + (bg.g - cg) * k;
+        buf.data[i + 2] = cb + (bg.b - cb) * k;
+      }
+    }
+  }
+
+  /** 深底浅字、浅底深字 */
+  function readableColor(bg) {
+    const lum = (0.299 * bg.r + 0.587 * bg.g + 0.114 * bg.b) / 255;
+    return lum > 0.55 ? '#111111' : '#ffffff';
+  }
+
+  /** 按框的大小算自适应余量：模型给的位置常偏半个字高，不留余量会擦不干净。
+      垂直方向留得更多——模型框竖直方向最容易偏，水平方向偏一点无所谓。
+      垂直余量给到 0.5 倍字高，这样框偏一整行也还能盖住。 */
+  function adaptivePad(box, w, h) {
+    const bw = (Math.abs(box.x2 - box.x1) / 100) * w;
+    const bh = (Math.abs(box.y2 - box.y1) / 100) * h;
+    return {
+      x: Math.round(Math.min(Math.max(bw * 0.1, 4), 24)),
+      y: Math.round(Math.min(Math.max(bh * 0.5, 8), 44))
+    };
+  }
+
+  /** 擦掉一个框：先把框撑大一点，再按「和背景色的差距」加权抹掉 */
+  function eraseRect(buf, x1, y1, x2, y2) {
+    const bg = estimateBackground(buf, x1, y1, x2, y2);
+    eraseBox(buf, x1, y1, x2, y2, bg);
+    return bg;
+  }
+
+  /**
+   * 生成擦字+译文后的图片（dataURL）。
+   * @returns { url, bgs } url 是新图，bgs 是每个文字块的背景色（决定字色）
+   */
+  function renderTranslated(img, items) {
+    const px = readPixels(img);
+    if (!px) return null;
+    const { canvas, ctx, buf } = px;
+
+    const boxes = items.filter(it => it.box && it.box.length === 4 && it.zh);
+
+    /* 先算好每个框的像素范围（还没擦，用的是原始图） */
+    const rects = boxes.map(b => {
+      const [ax1, ay1, ax2, ay2] = b.box.map(Number);
+      const pad = adaptivePad(b, buf.width, buf.height);
+      return {
+        x1: Math.max(0, Math.round((Math.min(ax1, ax2) / 100) * buf.width) - pad.x),
+        y1: Math.max(0, Math.round((Math.min(ay1, ay2) / 100) * buf.height) - pad.y),
+        x2: Math.min(buf.width, Math.round((Math.max(ax1, ax2) / 100) * buf.width) + pad.x),
+        y2: Math.min(buf.height, Math.round((Math.max(ay1, ay2) / 100) * buf.height) + pad.y)
+      };
+    });
+
+    /* 背景色必须在擦之前全估好：边擦边估的话，后一个框会拿
+       「上一个框刚擦出来的白」当背景，越擦越白，整块图都漂移掉。 */
+    const bgs = rects.map(r => estimateBackground(buf, r.x1, r.y1, r.x2, r.y2));
+
+    /* 再逐个擦 */
+    rects.forEach((r, i) => eraseBox(buf, r.x1, r.y1, r.x2, r.y2, bgs[i]));
+
+    /* 把擦过的像素写回 canvas */
+    ctx.putImageData(new ImageData(buf.data, buf.width, buf.height), 0, 0);
+
+    /* 画译文 */
+    boxes.forEach((it, i) => {
+      const r = rects[i];
+      const bg = bgs[i] || { r: 255, g: 255, b: 255 };
+      const w = Math.max(20, r.x2 - r.x1);
+      const h = Math.max(14, r.y2 - r.y1);
+      /* 字号跟着原框高度走，但别大到溢出框 */
+      const fontSize = Math.max(11, Math.min(Math.round(h * 0.72), 34));
+
+      ctx.save();
+      ctx.font = `600 ${fontSize}px system-ui, "PingFang SC", "Microsoft YaHei", sans-serif`;
+      ctx.textBaseline = 'top';
+      ctx.textAlign = 'center';
+
+      const cx = (r.x1 + r.x2) / 2;
+      const ty = r.y1 + Math.max(0, (h - fontSize) / 2);
+
+      /* 描边：不管底色深浅都看得清 */
+      ctx.lineWidth = Math.max(2, fontSize / 7);
+      ctx.strokeStyle = readableColor(bg) === '#ffffff' ? 'rgba(0,0,0,0.75)' : 'rgba(255,255,255,0.85)';
+      ctx.lineJoin = 'round';
+      ctx.strokeText(it.zh, cx, ty);
+      ctx.fillStyle = readableColor(bg);
+      ctx.fillText(it.zh, cx, ty);
+      ctx.restore();
+    });
+
+    try {
+      return { url: canvas.toDataURL('image/jpeg', 0.92), bgs };
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /** 把擦好的图盖在原图上（原图保留在下面，撤销时能还原） */
+  function paintInpainted(img, url) {
+    for (const n of img.parentElement?.querySelectorAll?.('.' + OVERLAY_CLASS) || []) n.remove();
+    const wrap = img.parentElement;
+    if (!wrap) return;
+    if (getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+
+    const d = document.createElement('img');
+    d.className = OVERLAY_CLASS;
+    d.src = url;
+    d.alt = '';
+    Object.assign(d.style, {
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      width: '100%',
+      height: '100%',
+      objectFit: 'contain',
+      pointerEvents: 'none',
+      zIndex: '2147483000'
+    });
+    wrap.appendChild(d);
+  }
+
   /* ---------------- 主流程 ---------------- */
 
   async function translateCurrent(force) {
@@ -297,8 +501,21 @@
     const items = res.items || [];
     state.done.set(img, { items, at: Date.now() });
     renderItems(items);
-    paintOverlays(img, items);
+    applyToImage(img, items);
     updateBar();
+  }
+
+  /** 按当前模式把译文画到图上：擦字重绘，或者浮层覆盖 */
+  function applyToImage(img, items) {
+    if (state.mode === 'inpaint') {
+      const r = renderTranslated(img, items);
+      if (r) {
+        paintInpainted(img, r.url);
+        return;
+      }
+      /* 擦不动（跨域之类）就退回浮层，至少能看见译文 */
+    }
+    paintOverlays(img, items);
   }
 
   function step(delta) {
@@ -359,3 +576,4 @@
     }
   });
 })();
+
