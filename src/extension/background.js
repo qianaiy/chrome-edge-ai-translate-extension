@@ -319,13 +319,15 @@ function buildRequest(protocol, settings, messages, opts = {}) {
     const cleanModel = model.replace(/^models\//, '');
     const method = stream ? 'streamGenerateContent' : 'generateContent';
 
-    const qs = [];
-    if (stream) qs.push('alt=sse');
-    if (key) qs.push('key=' + encodeURIComponent(key));
+    /* key 走请求头，不进 URL。
+       URL 会留在浏览器历史、扩展日志、代理访问记录里，还可能随 Referer 外泄；
+       Gemini 官方支持 x-goog-api-key，没有理由把它塞进查询串。 */
+    const geminiHeaders = { 'Content-Type': 'application/json' };
+    if (key) geminiHeaders['x-goog-api-key'] = key;
 
     const url =
       `${root}/${version}/models/${encodeURIComponent(cleanModel)}:${method}` +
-      (qs.length ? `?${qs.join('&')}` : '');
+      (stream ? '?alt=sse' : '');
 
     const contents = messages
       .filter(m => m.role !== 'system')
@@ -347,7 +349,7 @@ function buildRequest(protocol, settings, messages, opts = {}) {
     if (maxTokens) body.generationConfig.maxOutputTokens = maxTokens;
     if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
 
-    return { url, headers: { 'Content-Type': 'application/json' }, body };
+    return { url, headers: geminiHeaders, body };
   }
 
   // openai 兼容
@@ -407,9 +409,31 @@ function extractText(json) {
   return null;
 }
 
+/* ------------------------- 错误处理 ------------------------- */
+
+/**
+ * 从错误文本里抹掉 API Key。
+ *
+ * 上游经常把 Key 回显在错误体里（"Incorrect API key provided: sk-…"），
+ * 而这段文本最终会显示在弹窗、页面的错误提示里。抛给用户之前先擦掉。
+ * 用 split/join 而不是正则，避免 Key 里的 . * + 等字符被当成元字符。
+ */
+function redactSecrets(text, key) {
+  const k = String(key || '').trim();
+  const s = String(text == null ? '' : text);
+  if (!k) return s;
+  return s.split(k).join('<已隐藏>');
+}
+
 /* ------------------------- 单次调用 ------------------------- */
 
-const RETRYABLE_STATUS = new Set([400, 401, 403, 404, 405, 422]);
+/* 400/404/405/422 多半是「协议形状不对」，换一种协议值得试。
+   401/403 是鉴权失败 —— 换协议也一样失败，只会多打两次请求、
+   把真正的错误埋在三行重复信息里，所以单独拎出来。 */
+const RETRYABLE_STATUS = new Set([400, 404, 405, 422]);
+
+/* 鉴权类状态码：Key 无效 / 没有该模型权限 / 额度不足，重试协议没有意义 */
+const AUTH_STATUS = new Set([401, 403]);
 
 /* 有些接口不认 max_tokens（只认 max_completion_tokens）——这种 400 换协议救不了，
    要让调用方去掉限制重试，而不是傻乎乎地去试 Anthropic / Gemini */
@@ -446,10 +470,23 @@ async function callOnce(protocol, settings, messages) {
       json?.error ||
       raw.slice(0, 300) ||
       '(空响应)';
-    const err = new Error(
-      `接口 ${res.status}：${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+    /* 上游可能把 Key 回显在错误体里，这段文字最终会原样显示给用户 */
+    const detailText = redactSecrets(
+      typeof detail === 'string' ? detail : JSON.stringify(detail),
+      settings.apiKey
     );
-    const detailText = typeof detail === 'string' ? detail : JSON.stringify(detail);
+
+    if (AUTH_STATUS.has(res.status)) {
+      const err = new Error(
+        `接口 ${res.status}：${detailText}\n` +
+          '（API Key 无效、没有该模型的权限，或额度不足 —— 去设置页检查 Key 与模型名）'
+      );
+      err.retryable = false;
+      err.auth = true;
+      throw err;
+    }
+
+    const err = new Error(`接口 ${res.status}：${detailText}`);
     err.maxTokens = MAX_TOKENS_RE.test(detailText);
     err.retryable = RETRYABLE_STATUS.has(res.status) && !err.maxTokens;
     throw err;
@@ -481,13 +518,16 @@ async function chat(settings, messages) {
       }
       return { text, protocol };
     } catch (e) {
-      errors.push(`${PROTOCOL_LABEL[protocol]}：${e?.message || e}`);
+      errors.push(
+        `${PROTOCOL_LABEL[protocol]}：${redactSecrets(String(e?.message || e), settings.apiKey)}`
+      );
       if (e?.retryable === false) break;
     }
   }
 
-  if (errors.length === 1) throw new Error(errors[0]);
-  throw new Error('三种协议都没成功：\n' + errors.join('\n'));
+  /* 兜底再擦一遍：流式分支的错误不经过 callOnce 的脱敏 */
+  if (errors.length === 1) throw new Error(redactSecrets(errors[0], settings.apiKey));
+  throw new Error(redactSecrets('三种协议都没成功：\n' + errors.join('\n'), settings.apiKey));
 }
 
 /* ------------------------- 流式调用 ------------------------- */
@@ -835,7 +875,8 @@ async function listModelsOnce(protocol, settings) {
     }
   } else if (protocol === 'gemini') {
     const root = base.replace(/\/models\/[^/]+$/i, '').replace(/\/(v1beta|v1)$/i, '');
-    url = `${root}/v1beta/models?pageSize=200` + (key ? `&key=${encodeURIComponent(key)}` : '');
+    url = `${root}/v1beta/models?pageSize=200`;
+    if (key) headers['x-goog-api-key'] = key;
   } else {
     url = base + '/models';
     if (key) headers.Authorization = 'Bearer ' + key;
@@ -1068,14 +1109,26 @@ const MARK_RE = /<<<\s*(\d+)\s*>>>([\s\S]*?)(?=<<<\s*\d+\s*>>>|$)/g;
 
 function parseMarked(text, count) {
   const out = new Array(count).fill(null);
+  const first = new Map();
+  const dup = new Set();
+
   MARK_RE.lastIndex = 0;
   let m;
   while ((m = MARK_RE.exec(text)) !== null) {
     const i = Number(m[1]) - 1;
-    if (i >= 0 && i < count) {
-      const v = m[2].trim();
-      if (v) out[i] = v;
-    }
+    if (i < 0 || i >= count) continue; // 越界编号忽略
+    const v = m[2].trim();
+    if (first.has(i)) dup.add(i);
+    else first.set(i, v);
+  }
+
+  for (const [i, v] of first) {
+    /* 同一编号出现多次时无法判断哪一份才是该段的译文。
+       以前是直接覆盖：后一段盖掉前一段，该位置又不是 null，
+       于是重试逻辑不触发，用户拿到一段错位的译文且无从察觉。
+       现在判为歧义，留给逐段重试。 */
+    if (dup.has(i)) continue;
+    if (v) out[i] = v;
   }
   return out;
 }
@@ -1626,7 +1679,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
 
       if (msg.type === 'mxt:getSettings') {
-        return sendResponse({ ok: true, settings: await getSettings() });
+        /* 只把「页面侧需要知道的」发出去，apiKey 留在后台。
+           内容脚本跑在每一个被翻译的页面上，多一处能拿到 Key 的地方
+           就多一处泄漏面；需要 Key 的请求全部由后台代发。 */
+        const { apiKey, ...safe } = await getSettings();
+        return sendResponse({
+          ok: true,
+          settings: { ...safe, hasKey: !!String(apiKey || '').trim() }
+        });
       }
 
       /* 配置体检：弹窗和后台共用同一套规则，避免两边说法不一致 */

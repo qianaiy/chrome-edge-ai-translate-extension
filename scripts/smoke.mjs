@@ -226,7 +226,7 @@ async function main() {
      内容脚本跑在隔离世界（isolated world）里，页面主世界看不到 window.__MXT_ACTIVE__。
      但它注入的 #mxt-host 元素在页面 DOM 里，主世界能看到，所以用这个来验证。
 
-     注意：内容脚本的 matches 是 <all_urls>，data: URL 不在内，
+     注意：内容脚本的 matches 是 http/https，data: URL 不在内，
      所以必须起一个真的 http 服务来测。 */
   const { createServer } = await import('node:http');
   const server = createServer((_req, res) => {

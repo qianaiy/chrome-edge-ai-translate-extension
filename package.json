@@ -16,6 +16,9 @@
     "smoke": "node scripts/smoke.mjs",
     "smoke:edge": "node scripts/smoke.mjs --edge",
     "smoke:all": "node scripts/smoke.mjs && node scripts/smoke.mjs --edge",
+    "regress": "node scripts/browser-regress.mjs",
+    "regress:edge": "node scripts/browser-regress.mjs --edge",
+    "regress:all": "node scripts/browser-regress.mjs && node scripts/browser-regress.mjs --edge",
     "lint:secrets": "node scripts/secret-scan.mjs"
   },
   "devDependencies": {

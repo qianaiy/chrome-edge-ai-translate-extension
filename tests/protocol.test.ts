@@ -230,9 +230,11 @@ describe('buildRequest · gemini', () => {
     );
   });
 
-  it('有 apiKey 时查询串带 key', () => {
+  it('有 apiKey 时放在 x-goog-api-key 请求头，不进查询串', () => {
+    /* 曾经拼成 ?key=…：URL 会进浏览器历史、日志、代理访问记录和 Referer */
     const req = buildRequest('gemini', geminiSettings, [{ role: 'user', content: 'hi' }]);
-    expect(req.url).toContain('?key=AIza-test');
+    expect(req.headers['x-goog-api-key']).toBe('AIza-test');
+    expect(req.url).not.toContain('key=');
   });
 
   it('apiKey 为空时查询串没有 key', () => {
@@ -244,13 +246,14 @@ describe('buildRequest · gemini', () => {
     expect(req.url).not.toContain('key=');
   });
 
-  it('apiKey 会被 URL 编码', () => {
+  it('apiKey 里有特殊字符时原样放进请求头', () => {
     const req = buildRequest(
       'gemini',
       { ...geminiSettings, apiKey: 'a b&c' },
       [{ role: 'user', content: 'hi' }]
     );
-    expect(req.url).toContain('key=a%20b%26c');
+    expect(req.headers['x-goog-api-key']).toBe('a b&c');
+    expect(req.url).not.toContain('key=');
   });
 
   it('base 以 /v1beta 结尾时不会重复拼路径', () => {

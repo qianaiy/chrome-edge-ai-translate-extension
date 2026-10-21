@@ -48,8 +48,10 @@ describe('splitInlineMarks', () => {
     expect(splitInlineMarks('{{-1}}甲{{1}}乙', 2)).toBeNull();
   });
 
-  it('重复编号时后面的覆盖前面的', () => {
-    expect(splitInlineMarks('{{1}}甲{{1}}乙', 2)).toEqual(['乙', '']);
+  it('★ 重复编号时返回 null，而不是让后一段覆盖前一段', () => {
+    /* 老断言是 ['乙','']：第一段节点显示第二段的内容，第二段节点变成空，
+       而且不触发任何重试 —— 用户看到的是一段错位且缺字的译文 */
+    expect(splitInlineMarks('{{1}}甲{{1}}乙', 2)).toBeNull();
   });
 
   it('count=0 时空文本返回空数组', () => {

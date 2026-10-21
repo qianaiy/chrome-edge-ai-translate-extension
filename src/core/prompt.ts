@@ -50,14 +50,26 @@ export const MARK_RE = /<<<\s*(\d+)\s*>>>([\s\S]*?)(?=<<<\s*\d+\s*>>>|$)/g;
  */
 export function parseMarked(text: string, count: number): (string | null)[] {
   const out: (string | null)[] = new Array(count).fill(null);
+  const first = new Map<number, string>();
+  const dup = new Set<number>();
+
   MARK_RE.lastIndex = 0;
   let m: RegExpExecArray | null;
   while ((m = MARK_RE.exec(text)) !== null) {
     const i = Number(m[1]) - 1;
-    if (i >= 0 && i < count) {
-      const v = m[2].trim();
-      if (v) out[i] = v;
-    }
+    if (i < 0 || i >= count) continue; // 越界编号忽略
+    const v = m[2].trim();
+    if (first.has(i)) dup.add(i);
+    else first.set(i, v);
+  }
+
+  for (const [i, v] of first) {
+    /* 同一编号出现多次时无法判断哪一份才是该段的译文。
+       以前这里是直接覆盖：后一段盖掉前一段，该位置又不是 null，
+       于是重试逻辑不触发，用户拿到一段错位的译文且无从察觉。
+       现在判为歧义，留给逐段重试。 */
+    if (dup.has(i)) continue;
+    if (v) out[i] = v;
   }
   return out;
 }
@@ -96,8 +108,13 @@ export function splitInlineMarks(text: string, count: number): (string | null)[]
   /* 编号必须在 1..count 之内。模型偶尔会把编号写成 2,3,4（以为从 1 开始数），
      这时标记数量刚好等于 count，但 k-1 会越界写数组，
      把后面几段的内容挤到错误的位置上。 */
+  const used = new Set<number>();
   for (const f of found) {
     if (!Number.isInteger(f.k) || f.k < 1 || f.k > count) return null;
+    /* 同一编号出现两次：数量虽然对得上，但有一段的内容被另一段顶掉了。
+       与其把错位的文字画到页面上，不如退回逐条重译。 */
+    if (used.has(f.k)) return null;
+    used.add(f.k);
   }
 
   const out: (string | null)[] = new Array(count).fill('');

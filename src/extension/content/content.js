@@ -802,23 +802,34 @@
        - parts（按文本节点换）：框架改了那几个文本节点
        - 整块换：框架把子元素换回去了（我们插进去的文本节点被冲掉） */
   function invalidateIfReverted(rec, targetLang) {
-    if (!rec || !rec.swapped) return false;
+    if (!rec) return false;
     const el = rec.el;
     if (!el || el.isConnected === false) return false;
 
-    const nowText = ownText(el);
+    /* 按文本节点换的块（parts）原文已经被译文覆盖，ownText 必然和 origText
+       不同，拿它判断会每轮都自我作废，直接跳过。 */
+    if (rec.parts) return false;
+
+    const target = rec.target || el;
+    const nowText = ownText(target);
     if (!nowText) return false;
 
-    /* 拿当前文字和「我们翻之前的原文」比：一样就说明被顶回去了 */
-    const origText = rec.origText || '';
-    if (!origText) return false;
-    if (nowText !== origText) return false; // 译文还在，不用管
+    /* 拿当前文字和「我们翻之前的原文」比。两种旧译文已经对不上的情况：
+         1. 译文-only 模式（swapIn 换过字）：原文被框架顶回来了
+         2. 双语模式：原文被框架改成了别的内容（列表实时刷新、倒计时之类），
+            以前这种情况不处理，页面上就留着一句和新原文毫无关系的旧译文。 */
+    const reverted = rec.swapped && nowText === rec.origText;
+    const changed = !rec.swapped && !!rec.origText && nowText !== rec.origText;
+    if (!reverted && !changed) return false;
 
-    /* 文字确实被顶回原文了：作废这条记录，让它能被重新翻译 */
+    /* 确实对不上了：作废这条记录，让它能被重新收集、重新翻译 */
     if (rec.node && rec.node.parentNode) rec.node.parentNode.removeChild(rec.node);
     if (el.classList) {
       el.classList.remove('mxt-swapped');
       el.classList.remove('mxt-orig');
+    }
+    if (typeof el.removeAttribute === 'function' && el.hasAttribute('data-mxt-out')) {
+      el.removeAttribute('data-mxt-out'); // 不清掉的话这块会被 CSS 藏起来，重翻也看不见
     }
     rec.swapped = false;
     rec.savedTexts = null;
@@ -992,6 +1003,14 @@
     if (state.root && !state.root.isConnected) {
       state.root = state.mode === 'full' ? null : pickScope();
     }
+
+    /* 先把「被框架改掉原文」的块作废，让它们能被这一轮重新收集、重新翻译。
+       必须在收集之前做：等收集完再作废，这一轮已经把这个块跳过了，
+       要等下一轮才有机会补回来 —— 而下一轮往往永远不会来。 */
+    for (const rec of state.recs.slice()) {
+      invalidateIfReverted(rec, targetLang);
+    }
+
     const scope = state.root || document;
     let all = [];
     try {
@@ -1025,19 +1044,13 @@
   /* 可能是「一段文字」的容器：Nexus 的模组标题是 a、摘要是 div、分类是 div */
   const TEXT_CONTAINER = 'div,span,a,strong,em,b,i,label,small,time,cite,q,abbr,font';
 
-  function collectTextContainers(scope, targetLang, picked) {    const out = [];
+  function collectTextContainers(scope, targetLang, picked) {
+    const out = [];
     let all = [];
     try {
       all = Array.from(scope.querySelectorAll('*'));
     } catch (_) {
       return out;
-    }
-
-    /* 先把「被框架顶回原文」的块作废，让它们能被重新收集、重新翻译。
-       不做这一步的话，它们带着 mxt-orig，会被 closest('.mxt-orig') 挡掉，
-       永远翻不回来了。 */
-    for (const rec of state.recs.slice()) {
-      invalidateIfReverted(rec, targetLang);
     }
 
     /* 先标出「内部还有块级结构」的元素，避免把一个区块当成一段话整个翻掉 */
@@ -1259,8 +1272,13 @@
     /* 编号必须在 1..count 之内。模型偶尔会把编号写成 2,3,4（以为从 1 开始数），
        这时 found.length 刚好等于 count，但 k-1 会越界写数组，
        把后面几段的内容挤到错误的位置上。 */
+    const used = new Set();
     for (const f of found) {
       if (!Number.isInteger(f.k) || f.k < 1 || f.k > count) return null;
+      /* 同一编号出现两次：数量虽然对得上，但有一段的内容被另一段顶掉了。
+         与其把错位的文字画到页面上，不如退回逐条重译。 */
+      if (used.has(f.k)) return null;
+      used.add(f.k);
     }
     const out = new Array(count).fill('');
     /* 第一个标记前面的内容（比如模型自己加的前缀）不能丢，
@@ -1278,14 +1296,22 @@
 
   function parseMarkedLocal(text, count) {
     const out = new Array(count).fill(null);
+    const first = new Map();
+    const dup = new Set();
     MARK_RE.lastIndex = 0;
     let m;
     while ((m = MARK_RE.exec(text)) !== null) {
       const i = Number(m[1]) - 1;
-      if (i >= 0 && i < count) {
-        const v = m[2].trim();
-        if (v) out[i] = v;
-      }
+      if (i < 0 || i >= count) continue;
+      const v = m[2].trim();
+      if (first.has(i)) dup.add(i);
+      else first.set(i, v);
+    }
+    for (const [i, v] of first) {
+      /* 同一编号出现多次 → 该段判为歧义（null），交给重试，
+         而不是让后一段静默覆盖前一段 */
+      if (dup.has(i)) continue;
+      if (v) out[i] = v;
     }
     return out;
   }

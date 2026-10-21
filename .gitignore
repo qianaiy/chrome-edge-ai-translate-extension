@@ -31,6 +31,9 @@ eval/reports/
 *.pem
 *.key
 
+# 会话转写 / 交接记录（本地工具产出，含完整命令行历史与凭据）
+_bili-handoff/
+
 # Editor / OS noise
 .vscode/
 .idea/
