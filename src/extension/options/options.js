@@ -240,11 +240,21 @@ function selectModel(m) {
     : `已选 ${m.id}（非对话模型，翻译大概率用不了）`;
 }
 
+/* 一次最多渲染 300 个 —— 列表可能有几千个，全渲染会卡。
+   所有「面板里第几项」的判断都必须用这个截断后的列表，
+   否则键盘上下键能走到没渲染出来的项上，Enter 选中的东西跟看到的对不上。 */
+const PANEL_MAX = 300;
+
+/** 面板里实际显示的那些项（顺序跟渲染一致） */
+function shownModels() {
+  return filterModels(visibleModels(), $('modelSearch').value).slice(0, PANEL_MAX);
+}
+
 function renderPanel(query) {
   const list = $('modelList');
   const current = $('model').value.trim();
   const filtered = filterModels(visibleModels(), query);
-  const shown = filtered.slice(0, 300);
+  const shown = filtered.slice(0, PANEL_MAX);
 
   lastQuery = query || '';
   itemEls = new Map();
@@ -332,7 +342,7 @@ function refreshBadge(id) {
 }
 
 function movePanelIndex(step) {
-  const shown = filterModels(visibleModels(), $('modelSearch').value);
+  const shown = shownModels();
   if (!shown.length) return;
   const next = panelIndex + step;
   panelIndex = next < 0 ? shown.length - 1 : next >= shown.length ? 0 : next;
@@ -376,7 +386,7 @@ $('modelSearch').addEventListener('keydown', e => {
   }
   if (e.key === 'Enter') {
     e.preventDefault();
-    const shown = filterModels(visibleModels(), $('modelSearch').value);
+    const shown = shownModels();
     const pick = shown[panelIndex] || shown[0];
     if (pick) selectModel(pick);
     return;
