@@ -574,6 +574,23 @@ async function main() {
             console.log(`      面板状态：${state}`);
             record('漫画模式', '产生译文行', /"zh":[1-9]/.test(state), state.slice(0, 180));
 
+            /* 用户报障「没有擦字」：译文出来了，但原图上的原文还在。
+               这里区分两种画法——擦字重绘会在图上方盖一张 data: 的新图，
+               浮层覆盖则是一堆 div。两者都算翻译成功，但只有前者真的擦了字。 */
+            const PAINT_PROBE_LIVE = `(() => {
+              const ov = [...document.querySelectorAll('.mxt-comic-overlay')];
+              const painted = ov.filter(n => n.tagName === 'IMG' && String(n.getAttribute('src') || '').startsWith('data:'));
+              const layers = ov.filter(n => n.tagName === 'DIV');
+              return { total: ov.length, inpainted: painted.length, textLayers: layers.length };
+            })()`;
+            const paint = await evalPage(kr.session, PAINT_PROBE_LIVE);
+            record(
+              '漫画模式',
+              '擦字重绘（不是浮层覆盖）',
+              !!(paint && paint.inpainted > 0 && paint.textLayers === 0),
+              JSON.stringify(paint)
+            );
+
             /* 面板按钮在 shadow root 里，页面上下文点得到，不需要额外消息通道 */
             const CLICK_ALL = `(() => {
               const h = document.getElementById('mxt-comic-host');

@@ -102,6 +102,7 @@
       .mxt-comic-orig { color: #cfd3d8; }
       .mxt-comic-zh { color: #fff; }
       .mxt-comic-msg { color: #9aa0a6; }
+      .mxt-comic-note { color: #f5c451; font-size: 11px; margin-top: 6px; }
     `;
     const shadow = h.attachShadow({ mode: 'open' });
     shadow.appendChild(style);
@@ -153,12 +154,15 @@
     modeBtn.addEventListener('click', () => {
       state.mode = state.mode === 'inpaint' ? 'overlay' : 'inpaint';
       modeBtn.textContent = state.mode === 'inpaint' ? '擦字版' : '浮层版';
-      /* 切模式后把当前这张重画一遍 */
+      /* 切模式后把当前这张重画一遍。
+         必须把 rec.drawable 一起传下去：跨域图片的原图是污染画布，
+         readPixels 会失败，renderTranslated 返回 null 后退回浮层——
+         表现就是「点了擦字版，还是一堆白框」。 */
       const img = state.images[state.index];
       if (img) {
         const rec = state.done.get(img);
         clearOverlays();
-        if (rec) applyToImage(img, rec.items);
+        if (rec) applyToImage(img, rec.items, rec.drawable);
       }
     });
 
@@ -218,6 +222,20 @@
       row.appendChild(z);
       body.appendChild(row);
     }
+  }
+
+  /* 擦字失败时不要静默退回浮层：用户看到的是「擦字功能坏了」，
+     却不知道是跨域读不到像素。这里追加一行提示，不清空已渲染的译文列表。 */
+  function note(text) {
+    const h = host();
+    const body = h.shadowRoot.querySelector('.mxt-comic-body');
+    if (!body) return;
+    for (const n of body.querySelectorAll('.mxt-comic-note')) n.remove();
+    if (!text) return;
+    const d = document.createElement('div');
+    d.className = 'mxt-comic-note';
+    d.textContent = text;
+    body.appendChild(d);
   }
 
   /* ---------------- 覆盖层 ---------------- */
@@ -689,9 +707,11 @@
     const img = state.images[state.index];
     if (!img) return;
     if (!force && state.done.has(img)) {
+      /* 翻回翻过的一张时重画。这里以前写死 paintOverlays，
+         等于每次切换图片都退回浮层——擦字版只在第一次翻译时出现过一次。 */
       const rec = state.done.get(img);
       renderItems(rec.items);
-      paintOverlays(img, rec.items);
+      applyToImage(img, rec.items, rec.drawable);
       return;
     }
     setMsg('正在读图…');
@@ -700,7 +720,8 @@
       setMsg(r.error);
       return;
     }
-    state.done.set(img, { items: r.items, at: Date.now() });
+    /* drawable 要一起存：它是后台取回来的同源副本，重画擦字版时还得用它 */
+    state.done.set(img, { items: r.items, at: Date.now(), drawable: r.drawable });
     renderItems(r.items);
     applyToImage(img, r.items, r.drawable);
     updateBar();
@@ -741,7 +762,8 @@
         handled += 1;
         if (r.ok) {
           ok += 1;
-          state.done.set(img, { items: r.items, at: Date.now() });
+          /* drawable 要一起存：它是后台取回来的同源副本，重画擦字版时还得用它 */
+    state.done.set(img, { items: r.items, at: Date.now(), drawable: r.drawable });
           applyToImage(img, r.items, r.drawable);
         } else if (!batch.stop) {
           failed += 1;
@@ -763,13 +785,28 @@
 
   /** 按当前模式把译文画到图上：擦字重绘，或者浮层覆盖 */
   function applyToImage(img, items, drawable) {
+    /* 只给了译文、没给坐标的块无法定位。数量对上时不说，数量为 0 才说：
+       这是模型没按格式回答，用户看到的是「图没有变化」，不说明就像功能坏了。 */
+    const placeable = items.filter(it => it.box && it.box.length === 4 && it.zh).length;
+    if (items.length && !placeable) {
+      note('模型这次只给了译文、没给文字位置，所以图上没画。面板里可以逐条看。');
+      return;
+    }
+
     if (state.mode === 'inpaint') {
       const r = renderTranslated(drawable || img, items);
       if (r) {
         paintInpainted(img, r.url);
+        note('');
         return;
       }
-      /* 擦不动（跨域之类）就退回浮层，至少能看见译文 */
+      /* 擦不动就退回浮层，至少能看见译文；但要说明原因，
+         否则用户只会看到「一片白框」，以为擦字功能坏了。 */
+      note(
+        drawable
+          ? '这张图擦字失败（画面太大或像素读取异常），已退回浮层覆盖。'
+          : '这张图跨域取不到原图，擦不了字，已退回浮层覆盖。'
+      );
     }
     paintOverlays(img, items);
   }
