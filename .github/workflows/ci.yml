@@ -56,6 +56,10 @@ jobs:
 
       - run: npm ci
 
+      # 冒烟测的是构建产物：core.js 只在 dist/ 里，没有它服务工作者起不来。
+      - name: 构建
+        run: npm run build
+
       - name: 冒烟测试 (${{ matrix.browser }})
         run: |
           if ("${{ matrix.browser }}" -eq "edge") {
