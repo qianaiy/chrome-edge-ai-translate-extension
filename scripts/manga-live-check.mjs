@@ -12,6 +12,14 @@
  *   MXT_TEST_MODEL   默认 lobsterai/MiniMax-M3.1-Flash
  *   MXT_TEST_VISION  视觉模型（漫画 OCR 用）
  *   MXT_TEST_ONLY    jp / kr / comic，只跑其中一项
+ *   MXT_TEST_PROXY   给浏览器挂代理，如 http://127.0.0.1:7893（localhost 自动绕过）
+ *   MXT_TEST_COMIC_URL     指定某一集漫画页（换站不用改代码）
+ *   MXT_TEST_COMIC_DOMAIN  该站的域名，用于找标签页，默认 comic.naver.com
+ *   MXT_TEST_POLL    轮询上限（次 × 1.5 秒），默认 30
+ *
+ * 注意：漫画站的图片 CDN 未必可达。Naver 的 image-comic.pstatic.net 在部分网络下
+ * 无论直连还是走代理都取不到图（页面打得开、但所有 <img> 的 naturalWidth 都是 0）。
+ * 那是网络问题，不是扩展问题——换一个可达的站（例如 shonenjumpplus.com）即可验证。
  */
 
 import { spawn } from 'node:child_process';
@@ -32,6 +40,21 @@ const MODEL = process.env.MXT_TEST_MODEL || 'lobsterai/MiniMax-M3.1-Flash';
 // 详见 docs/vision-models.md。
 const VISION = process.env.MXT_TEST_VISION || 'our-free-model/nvidia/nemotron-3.5-super-vl:free';
 const ONLY = (process.env.MXT_TEST_ONLY || '').toLowerCase();
+
+/* 可选代理。漫画站的图片 CDN（如 image-comic.pstatic.net）在部分网络下
+   直连取不到图，表现为「页面打得开、但一张长条图都没有」（tall: 0）。
+   这时给浏览器挂代理：MXT_TEST_PROXY=http://127.0.0.1:7890
+   localhost 必须绕过，否则连本地网关的请求也会被转发出去。 */
+const PROXY = process.env.MXT_TEST_PROXY || '';
+
+/* 漫画站可换。默认从 Naver 列表页自己找一集；也可以直接指一个分集页，
+   这样换到日站（Jump+ / comic-days 等）不用改代码：
+     MXT_TEST_COMIC_URL=https://shonenjumpplus.com/episode/xxx
+     MXT_TEST_COMIC_DOMAIN=shonenjumpplus.com
+   注意：Naver 的图片 CDN（image-comic.pstatic.net）在部分网络下完全不可达，
+   表现为页面打得开、但所有 <img> 都是 naturalWidth=0。这是网络问题，不是扩展问题。 */
+const COMIC_URL = process.env.MXT_TEST_COMIC_URL || '';
+const COMIC_DOMAIN = process.env.MXT_TEST_COMIC_DOMAIN || 'comic.naver.com';
 
 if (!KEY) {
   console.error('缺少 MXT_TEST_KEY 环境变量。密钥不写进仓库，也不写进脚本。');
@@ -98,7 +121,13 @@ const PANEL_PROBE = `(() => {
     prog: (sr.querySelector('.mxt-comic-prog') || {}).textContent || '',
     msg: (sr.querySelector('.mxt-comic-msg') || {}).textContent || '',
     zh: sr.querySelectorAll('.mxt-comic-zh').length,
-    orig: sr.querySelectorAll('.mxt-comic-orig').length
+    orig: sr.querySelectorAll('.mxt-comic-orig').length,
+    /* 抽前 3 组原文/译文，用来肉眼判断「真的翻对了」而不是只数了行数 */
+    pairs: [...sr.querySelectorAll('.mxt-comic-body > *')].slice(0, 3).map(row => {
+      const o = row.querySelector('.mxt-comic-orig');
+      const z = row.querySelector('.mxt-comic-zh');
+      return [((o && o.textContent) || '').slice(0, 40), ((z && z.textContent) || '').slice(0, 40)];
+    })
   };
 })()`;
 
@@ -126,6 +155,7 @@ async function main() {
       '--disable-renderer-backgrounding',
       '--disable-backgrounding-occluded-windows',
       '--window-size=1280,900',
+      ...(PROXY ? [`--proxy-server=${PROXY}`, '--proxy-bypass-list=<local>'] : []),
       'about:blank'
     ],
     { stdio: 'ignore' }
@@ -427,17 +457,26 @@ async function main() {
          以前只查 detail，所以在列表页永远找不到，漫画模式被判成「不可用」。 */
       const TALL_PROBE = `(() => {
          let tall = 0;
-         const total = document.querySelectorAll('img').length;
-         for (const img of document.querySelectorAll('img')) {
+         const imgs = [...document.querySelectorAll('img')];
+         const total = imgs.length;
+         const sample = [];
+         for (const img of imgs) {
            const r = img.getBoundingClientRect();
+           if (sample.length < 3) sample.push({
+             nw: img.naturalWidth, nh: img.naturalHeight,
+             w: Math.round(r.width), h: Math.round(r.height),
+             loading: img.getAttribute('loading') || '',
+             src: (img.currentSrc || img.src || '').slice(0, 50)
+           });
            if (img.naturalWidth >= 350 && r.width >= 260 && r.height >= 340 &&
                r.height / Math.max(1, r.width) > 1.12) tall++;
          }
-         return { total, tall };
+         return { total, tall, y: Math.round(scrollY), dh: document.documentElement.scrollHeight,
+                  ih: innerHeight, sample };
        })()`;
 
       let candidates = [];
-      const direct = await pick('a[href*="detail?titleId="]');
+      const direct = COMIC_URL || (await pick('a[href*="detail?titleId="]'));
       if (direct) {
         candidates = [direct];
       } else {
@@ -496,7 +535,7 @@ async function main() {
         record('漫画模式', '漫画阅读页已打开', true, String(href).slice(0, 90));
         record('漫画模式', '页面存在符合条件的长条图', true, JSON.stringify(cand));
 
-        const krTid = (await tidOf('comic.naver.com')) || tids.kr;
+        const krTid = (await tidOf(COMIC_DOMAIN)) || tids.kr;
         record('漫画模式', '拿到标签页 id', !!krTid, String(krTid));
 
         if (krTid) {
