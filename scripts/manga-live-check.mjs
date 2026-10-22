@@ -26,7 +26,11 @@ const extPath = join(process.cwd(), 'dist');
 const KEY = process.env.MXT_TEST_KEY || '';
 const BASE = process.env.MXT_TEST_BASE || 'http://127.0.0.1:8326/v1';
 const MODEL = process.env.MXT_TEST_MODEL || 'lobsterai/MiniMax-M3.1-Flash';
-const VISION = process.env.MXT_TEST_VISION || 'cline/nvidia/nemotron-3.5-super-vl:free';
+// 默认值挑「真的能读图」的那个。同名不同命名空间差别很大：
+//   cline/* 的 nemotron VL 收不到图片（模型自己回答「我无法查看这张图片」）；
+//   raccoon/sn-deepseek-v4-1-flash-1017 是纯文本模型，网关直接把图片丢掉。
+// 详见 docs/vision-models.md。
+const VISION = process.env.MXT_TEST_VISION || 'our-free-model/nvidia/nemotron-3.5-super-vl:free';
 const ONLY = (process.env.MXT_TEST_ONLY || '').toLowerCase();
 
 if (!KEY) {
