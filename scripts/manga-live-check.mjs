@@ -42,7 +42,7 @@ const VISION = process.env.MXT_TEST_VISION || 'our-free-model/nvidia/nemotron-3.
 const ONLY = (process.env.MXT_TEST_ONLY || '').toLowerCase();
 
 /* 可选代理。漫画站的图片 CDN（如 image-comic.pstatic.net）在部分网络下
-   直连取不到图，表现为「页面打得开、但一张长条图都没有」（tall: 0）。
+   直连取不到图，表现为「页面打得开、但一张长条图都没有」（comic: 0）。
    这时给浏览器挂代理：MXT_TEST_PROXY=http://127.0.0.1:7890
    localhost 必须绕过，否则连本地网关的请求也会被转发出去。 */
 const PROXY = process.env.MXT_TEST_PROXY || '';
@@ -455,8 +455,14 @@ async function main() {
       /* 一级列表页上只有作品页链接（/webtoon/list?titleId=…），
          具体某一集（/webtoon/detail?…）要点进作品页才拿得到。
          以前只查 detail，所以在列表页永远找不到，漫画模式被判成「不可用」。 */
-      const TALL_PROBE = `(() => {
-         let tall = 0;
+      /* 判定条件必须跟 comic.js 的 isComicLike 一致，否则会出现
+         「扩展本来能翻，但测试脚本说没有合格图片」的假失败。
+         实测过的例子：MangaDex 默认「单页」模式，页面图是 955×866 的横图，
+         按「竖长」判是有 0 张，但扩展的横图分支（宽度占视口 70% 且高 ≥420）
+         是认的。 */
+      const COMIC_PROBE = `(() => {
+         const vw = document.documentElement.clientWidth || 800;
+         let comic = 0, long = 0;
          const imgs = [...document.querySelectorAll('img')];
          const total = imgs.length;
          const sample = [];
@@ -468,11 +474,15 @@ async function main() {
              loading: img.getAttribute('loading') || '',
              src: (img.currentSrc || img.src || '').slice(0, 50)
            });
-           if (img.naturalWidth >= 350 && r.width >= 260 && r.height >= 340 &&
-               r.height / Math.max(1, r.width) > 1.12) tall++;
+           if (!img.naturalWidth || !img.naturalHeight) continue;
+           if (r.width < 260 || r.height < 340) continue;
+           if (img.naturalWidth < 350) continue;
+           const ratio = r.height / r.width;
+           if (ratio > 1.12) { long++; comic++; continue; }
+           if (r.width >= vw * 0.7 && r.height >= 420) comic++;
          }
-         return { total, tall, y: Math.round(scrollY), dh: document.documentElement.scrollHeight,
-                  ih: innerHeight, sample };
+         return { total, comic, long, y: Math.round(scrollY),
+                  dh: document.documentElement.scrollHeight, ih: innerHeight, sample };
        })()`;
 
       let candidates = [];
@@ -517,23 +527,23 @@ async function main() {
           const before = await evalPage(kr.session, 'window.scrollY');
           await evalPage(kr.session, 'window.scrollBy(0, window.innerHeight * 1.4), 1');
           await sleep(650);
-          cand = await evalPage(kr.session, TALL_PROBE);
-          if (cand && cand.tall > 0) break;
+          cand = await evalPage(kr.session, COMIC_PROBE);
+          if (cand && cand.comic > 0) break;
           const after = await evalPage(kr.session, 'window.scrollY');
           if (after === before && i > 2) break;
         }
         console.log(`      ${url} → 图片 ${JSON.stringify(cand)}`);
-        if (cand && cand.tall > 0) {
+        if (cand && cand.comic > 0) {
           link = url;
           break;
         }
       }
 
-      record('漫画模式', '找到一集可翻译的漫画', !!link, link || `试了 ${candidates.length} 集都没有竖图`);
+      record('漫画模式', '找到一集可翻译的漫画', !!link, link || `试了 ${candidates.length} 集都没有可翻的漫画图`);
       if (link) {
         const href = await evalPage(kr.session, 'location.href');
         record('漫画模式', '漫画阅读页已打开', true, String(href).slice(0, 90));
-        record('漫画模式', '页面存在符合条件的长条图', true, JSON.stringify(cand));
+        record('漫画模式', '页面存在可翻译的漫画图', true, JSON.stringify(cand));
 
         const krTid = (await tidOf(COMIC_DOMAIN)) || tids.kr;
         record('漫画模式', '拿到标签页 id', !!krTid, String(krTid));
@@ -578,7 +588,9 @@ async function main() {
             record(
               '漫画模式',
               '批量翻译已启动',
-              !!clicked && /批量翻译/.test((after && after.msg) || ''),
+              /* 只有一两张图时批量会秒完，等我们再查时 msg 已经是「完成：成功 N 张」。
+                 两种状态都算启动过，否则就是测试自己跟自己抢时间。 */
+              !!clicked && /批量翻译|完成：成功/.test((after && after.msg) || ''),
               JSON.stringify(after).slice(0, 160)
             );
             /* 立刻停掉，别把一集上百张真跑一遍 */
