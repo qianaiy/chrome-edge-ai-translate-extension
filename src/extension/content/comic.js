@@ -128,11 +128,15 @@
     prog.className = 'mxt-comic-prog';
     const again = document.createElement('button');
     again.textContent = '重翻本张';
+    const allBtn = document.createElement('button');
+    allBtn.className = 'mxt-comic-all';
+    allBtn.textContent = '全部翻译';
+    allBtn.title = '从当前张开始，依次翻译后面所有图（失败的跳过）';
     const modeBtn = document.createElement('button');
     modeBtn.className = 'mxt-comic-mode';
     modeBtn.textContent = '擦字版';
     modeBtn.title = '切换：擦字重绘 / 浮层覆盖';
-    bar.append(prog, modeBtn, again);
+    bar.append(prog, modeBtn, again, allBtn);
 
     const body = document.createElement('div');
     body.className = 'mxt-comic-body';
@@ -145,6 +149,7 @@
     prev.addEventListener('click', () => step(-1));
     next.addEventListener('click', () => step(1));
     again.addEventListener('click', () => translateCurrent(true));
+    allBtn.addEventListener('click', () => translateAll());
     modeBtn.addEventListener('click', () => {
       state.mode = state.mode === 'inpaint' ? 'overlay' : 'inpaint';
       modeBtn.textContent = state.mode === 'inpaint' ? '擦字版' : '浮层版';
@@ -615,6 +620,71 @@
 
   /* ---------------- 主流程 ---------------- */
 
+  /* 识别请求原本没有任何上限：模型卡住时界面会永远停在「正在识别并翻译」，
+     用户既看不出是超时也不知道能不能跳过。加超时，让失败可见。 */
+  const REQUEST_TIMEOUT_MS = 120000;
+  const BATCH_CONCURRENCY = 2;
+
+  function withTimeout(promise, ms, label) {
+    if (!ms || ms <= 0) return promise;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new Error(`${label || '请求'}超时（${Math.round(ms / 1000)} 秒）`));
+      }, ms);
+      Promise.resolve(promise).then(
+        v => {
+          clearTimeout(timer);
+          resolve(v);
+        },
+        e => {
+          clearTimeout(timer);
+          reject(e);
+        }
+      );
+    });
+  }
+
+  /** 最多同时跑 limit 个；单张失败由 worker 自己处理，不影响其他张 */
+  async function runPool(items, limit, worker, shouldStop) {
+    let next = 0;
+    const lanes = Math.max(1, Math.min(limit || 1, items.length || 1));
+    const lane = async () => {
+      while (next < items.length) {
+        if (shouldStop && shouldStop()) return;
+        const i = next++;
+        try {
+          await worker(items[i], i);
+        } catch (_) {
+          /* 单张出问题不能拖垮整批；worker 自己负责计失败 */
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: lanes }, lane));
+  }
+
+  /** 识别一张图，不碰界面，方便批量复用 */
+  async function recognise(img) {
+    const drawable = await drawableImage(img);
+    const b64 = await toBase64(drawable);
+    if (!b64) return { ok: false, error: '这张图读不出来（跨域，且后台也取不到原图）' };
+    let res = null;
+    try {
+      res = await withTimeout(
+        chrome.runtime.sendMessage({
+          type: 'mxt:translateImage',
+          image: b64.data,
+          mediaType: b64.mediaType
+        }),
+        REQUEST_TIMEOUT_MS,
+        '识图'
+      );
+    } catch (e) {
+      return { ok: false, error: e?.message || String(e) };
+    }
+    if (!res || !res.ok) return { ok: false, error: res?.error || '翻译失败' };
+    return { ok: true, items: res.items || [], drawable };
+  }
+
   async function translateCurrent(force) {
     const img = state.images[state.index];
     if (!img) return;
@@ -625,34 +695,70 @@
       return;
     }
     setMsg('正在读图…');
-    /* 漫画站的图多半在 CDN 上且没有 CORS 头，直接 drawImage 会污染画布。
-       先让后台把字节取回来，在页面里造一份同源副本再画。 */
-    const drawable = await drawableImage(img);
-    const b64 = await toBase64(drawable);
-    if (!b64) {
-      setMsg('这张图读不出来（跨域，且后台也取不到原图）');
+    const r = await recognise(img);
+    if (!r.ok) {
+      setMsg(r.error);
       return;
     }
-    setMsg('正在识别并翻译（可能十几秒）…');
-    let res = null;
-    try {
-      res = await chrome.runtime.sendMessage({
-        type: 'mxt:translateImage',
-        image: b64.data,
-        mediaType: b64.mediaType
-      });
-    } catch (e) {
-      res = { ok: false, error: e?.message || String(e) };
-    }
-    if (!res || !res.ok) {
-      setMsg(res?.error || '翻译失败');
-      return;
-    }
-    const items = res.items || [];
-    state.done.set(img, { items, at: Date.now() });
-    renderItems(items);
-    applyToImage(img, items, drawable);
+    state.done.set(img, { items: r.items, at: Date.now() });
+    renderItems(r.items);
+    applyToImage(img, r.items, r.drawable);
     updateBar();
+  }
+
+  const batch = { running: false, stop: false };
+
+  /** 从当前张往后批量翻译；失败的跳过并计数，随时可停 */
+  async function translateAll() {
+    if (batch.running) {
+      batch.stop = true;
+      setMsg('正在停止…');
+      return;
+    }
+    const imgs = state.images.slice(state.index);
+    if (!imgs.length) return;
+    batch.running = true;
+    batch.stop = false;
+    const btn = () => {
+      const h = document.getElementById(HOST_ID);
+      return h && h.shadowRoot ? h.shadowRoot.querySelector('.mxt-comic-all') : null;
+    };
+    if (btn()) btn().textContent = '停止';
+    setMsg(`批量翻译中（同时 ${BATCH_CONCURRENCY} 张）…`);
+    let ok = 0;
+    let failed = 0;
+    let handled = 0;
+    await runPool(
+      imgs,
+      BATCH_CONCURRENCY,
+      async img => {
+        if (batch.stop) return;
+        let r = await recognise(img);
+        if (!r.ok && !batch.stop) {
+          /* 重试一次：多半是超时或上游偶发错误 */
+          r = await recognise(img);
+        }
+        handled += 1;
+        if (r.ok) {
+          ok += 1;
+          state.done.set(img, { items: r.items, at: Date.now() });
+          applyToImage(img, r.items, r.drawable);
+        } else if (!batch.stop) {
+          failed += 1;
+        }
+        setMsg(`批量翻译中：${handled} / ${imgs.length} 张，成功 ${ok}，失败 ${failed}`);
+      },
+      () => batch.stop
+    );
+    const stopped = batch.stop;
+    batch.running = false;
+    batch.stop = false;
+    if (btn()) btn().textContent = '全部翻译';
+    setMsg(
+      stopped
+        ? `已停止：处理 ${handled} / ${imgs.length} 张，成功 ${ok}，失败 ${failed}`
+        : `完成：成功 ${ok} 张，失败 ${failed} 张`
+    );
   }
 
   /** 按当前模式把译文画到图上：擦字重绘，或者浮层覆盖 */

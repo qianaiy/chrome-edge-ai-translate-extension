@@ -520,6 +520,27 @@ async function main() {
             }
             console.log(`      面板状态：${state}`);
             record('漫画模式', '产生译文行', /"zh":[1-9]/.test(state), state.slice(0, 180));
+
+            /* 面板按钮在 shadow root 里，页面上下文点得到，不需要额外消息通道 */
+            const CLICK_ALL = `(() => {
+              const h = document.getElementById('mxt-comic-host');
+              const b = h && h.shadowRoot && h.shadowRoot.querySelector('.mxt-comic-all');
+              if (!b) return false;
+              b.click();
+              return true;
+            })()`;
+            const clicked = await evalPage(kr.session, CLICK_ALL);
+            await sleep(2500);
+            const after = await evalPage(kr.session, PANEL_PROBE);
+            record(
+              '漫画模式',
+              '批量翻译已启动',
+              !!clicked && /批量翻译/.test((after && after.msg) || ''),
+              JSON.stringify(after).slice(0, 160)
+            );
+            /* 立刻停掉，别把一集上百张真跑一遍 */
+            await evalPage(kr.session, CLICK_ALL);
+            await sleep(800);
           }
         }
       }

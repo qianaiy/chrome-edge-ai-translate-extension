@@ -453,22 +453,35 @@ const AUTH_STATUS = new Set([401, 403]);
    要让调用方去掉限制重试，而不是傻乎乎地去试 Anthropic / Gemini */
 const MAX_TOKENS_RE = /max_tokens|max_completion_tokens|maxoutputtokens/i;
 
-async function callOnce(protocol, settings, messages) {
+async function callOnce(protocol, settings, messages, opts) {
   const req = buildRequest(protocol, settings, messages);
   assertEndpoint(req.url);
+
+  /* 识图这类请求可能被上游挂住很久。opts.timeoutMs 为零表示不设限。 */
+  const timeoutMs = Number(opts && opts.timeoutMs) || 0;
+  const ac = timeoutMs > 0 ? new AbortController() : null;
+  const timer = ac ? setTimeout(() => ac.abort(), timeoutMs) : null;
 
   let res;
   try {
     res = await fetch(req.url, {
       method: 'POST',
       headers: req.headers,
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(req.body),
+      ...(ac ? { signal: ac.signal } : {})
     });
   } catch (e) {
-    const err = new Error(`连不上接口：${redactSecrets(e?.message || String(e), settings.apiKey)}（检查 Base URL、网络或代理）`);
+    if (timer) clearTimeout(timer);
+    const aborted = e && e.name === 'AbortError';
+    const err = new Error(
+      aborted
+        ? `接口超时：${Math.round(timeoutMs / 1000)} 秒没有响应（模型卡住或上游排队）`
+        : `连不上接口：${redactSecrets(e?.message || String(e), settings.apiKey)}（检查 Base URL、网络或代理）`
+    );
     err.retryable = false;
     throw err;
   }
+  if (timer) clearTimeout(timer);
 
   assertNoCrossOriginRedirect(req.url, res);
 
@@ -1594,7 +1607,7 @@ async function translateImage(imageBase64, mediaType, settings, targetLang) {
   const errors = [];
   for (const protocol of order) {
     try {
-      const text = await callOnce(protocol, useModel, messages);
+      const text = await callOnce(protocol, useModel, messages, { timeoutMs: 180000 });
       const parsed = parseImageJson(text);
       if (parsed) return { items: parsed, protocol };
       errors.push(`${PROTOCOL_LABEL[protocol]}：返回的不是 JSON`);
