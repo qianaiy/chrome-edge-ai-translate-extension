@@ -1651,6 +1651,7 @@ const MESSAGE_TYPES = new Set([
   'mxt:tabComic',
   'mxt:transcribe',
   'mxt:translateImage',
+  'mxt:fetchImage',
   'mxt:tabStatus',
   'mxt:version',
   'mxt:detect',
@@ -1661,6 +1662,51 @@ const MESSAGE_TYPES = new Set([
   'mxt:clearAll'
 ]);
 
+/* 页面里的 <img> 常常和页面不同源（漫画站把图放在 CDN 上，还不给 CORS 头）。
+   这时 drawImage 会把画布标记为「被污染」，getImageData / toDataURL 全都抛错 ——
+   读不出像素就没法识别文字，也没法擦字重绘。
+
+   后台有 host_permissions，fetch 不受 CORS 约束，可以替页面把字节取回来，
+   页面再拿 data: URL 造一张同源副本，画布就干净了。
+
+   这条通道等于「按任意 URL 取二进制」，所以只放行 http/https：
+   file://、扩展内部资源、chrome:// 一律拒绝。credentials 用 omit，
+   免得把用户的登录态 Cookie 发给任意图片地址。 */
+const IMAGE_FETCH_LIMIT = 12 * 1024 * 1024;
+
+async function fetchImageBytes(url) {
+  let u;
+  try {
+    u = new URL(String(url || ''));
+  } catch {
+    return { ok: false, error: '图片地址不合法' };
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return { ok: false, error: '只支持 http/https 图片' };
+  }
+  try {
+    const res = await fetch(u.href, { credentials: 'omit', redirect: 'follow' });
+    if (!res.ok) return { ok: false, error: `取图失败（HTTP ${res.status}）` };
+    const type = String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (type && !type.startsWith('image/')) {
+      return { ok: false, error: '这个地址不是图片：' + type };
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (!buf.length) return { ok: false, error: '图片是空的' };
+    if (buf.byteLength > IMAGE_FETCH_LIMIT) {
+      return { ok: false, error: '图片太大（超过 12 MB）' };
+    }
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < buf.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, buf.subarray(i, i + chunk));
+    }
+    return { ok: true, mediaType: type || 'image/jpeg', data: btoa(bin) };
+  } catch (e) {
+    return { ok: false, error: '取图失败：' + (e?.message || String(e)) };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
@@ -1669,6 +1715,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
       if (!MESSAGE_TYPES.has(msg.type)) {
         return sendResponse({ ok: false, error: '未知消息类型：' + msg.type });
+      }
+
+      if (msg.type === 'mxt:fetchImage') {
+        return sendResponse(await fetchImageBytes(msg.url));
       }
 
       if (msg.type === 'mxt:getSettings') {

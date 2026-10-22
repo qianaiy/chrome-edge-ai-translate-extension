@@ -262,6 +262,36 @@
 
   /* ---------------- 图片转 base64 ---------------- */
 
+  /* 跨域图片的绕行路线：后台取字节 → 页面里造一张同源副本 → 画布不再被污染。
+     按 url 缓存，翻回上一张不用重下。 */
+  const localImages = new Map();
+
+  function loadDataUrl(src) {
+    return new Promise(resolve => {
+      const im = new Image();
+      im.onload = () => resolve(im);
+      im.onerror = () => resolve(null);
+      im.src = src;
+    });
+  }
+
+  async function drawableImage(img) {
+    const url = img.currentSrc || img.src || '';
+    if (!url) return img;
+    if (localImages.has(url)) return localImages.get(url) || img;
+    let copy = null;
+    try {
+      const res = await chrome.runtime.sendMessage({ type: 'mxt:fetchImage', url });
+      if (res && res.ok && res.data) {
+        copy = await loadDataUrl(`data:${res.mediaType || 'image/jpeg'};base64,${res.data}`);
+      }
+    } catch (_) {
+      copy = null;
+    }
+    localImages.set(url, copy);
+    return copy || img;
+  }
+
   async function toBase64(img) {
     try {
       const canvas = document.createElement('canvas');
@@ -595,9 +625,12 @@
       return;
     }
     setMsg('正在读图…');
-    const b64 = await toBase64(img);
+    /* 漫画站的图多半在 CDN 上且没有 CORS 头，直接 drawImage 会污染画布。
+       先让后台把字节取回来，在页面里造一份同源副本再画。 */
+    const drawable = await drawableImage(img);
+    const b64 = await toBase64(drawable);
     if (!b64) {
-      setMsg('这张图跨域了读不出来（换个图源，或把图片存下来再试）');
+      setMsg('这张图读不出来（跨域，且后台也取不到原图）');
       return;
     }
     setMsg('正在识别并翻译（可能十几秒）…');
@@ -618,14 +651,14 @@
     const items = res.items || [];
     state.done.set(img, { items, at: Date.now() });
     renderItems(items);
-    applyToImage(img, items);
+    applyToImage(img, items, drawable);
     updateBar();
   }
 
   /** 按当前模式把译文画到图上：擦字重绘，或者浮层覆盖 */
-  function applyToImage(img, items) {
+  function applyToImage(img, items, drawable) {
     if (state.mode === 'inpaint') {
-      const r = renderTranslated(img, items);
+      const r = renderTranslated(drawable || img, items);
       if (r) {
         paintInpainted(img, r.url);
         return;
