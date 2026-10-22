@@ -1387,7 +1387,9 @@ async function runSubtitle(tabId) {
 async function runComic(tabId) {
   const target = { tabId };
   try {
-    await chrome.scripting.executeScript({ target, files: ['content/comic.js'] });
+    /* 先注入共享核心：漫画的擦字/排版要用 core 里的气泡识别与 fitText。
+       内容脚本拿不到 service worker 的 importScripts 结果，只能在这里按顺序注入。 */
+    await chrome.scripting.executeScript({ target, files: ['core.js', 'content/comic.js'] });
   } catch (_) {
     /* 可能是受限页面 */
   }

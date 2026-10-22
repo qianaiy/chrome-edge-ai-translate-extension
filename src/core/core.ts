@@ -92,10 +92,13 @@ export {
   toCss,
   estimateTextWidth,
   fitText,
+  findBubbleRegion,
+  eraseBubble,
   type Box,
   type RGBA,
   type PixelBuffer,
-  type FitResult
+  type FitResult,
+  type BubbleRegion
 } from './inpaint.js';
 
 export {

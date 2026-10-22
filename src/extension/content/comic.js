@@ -488,6 +488,10 @@
       `图片原始尺寸 ${img.naturalWidth || '?'}×${img.naturalHeight || '?'}`,
       `图片显示尺寸 ${Math.round(r.width)}×${Math.round(r.height)} @ ${Math.round(r.left)},${Math.round(r.top)}`,
       `识别到文字块 ${items.filter(i => i.box && i.box.length === 4).length} / 共 ${items.length}`,
+      `气泡识别 ${state.lastPlan ? state.lastPlan.bubble + '/' + state.lastPlan.total + ' core=' + (state.lastPlan.core ? 'y' : 'n') + ' fn=' + (state.lastPlan.hasFn ? 'y' : 'n') + ' err=' + state.lastPlan.err : '未经过擦字版'}`,
+      `规划明细 ${state.lastPlan && state.lastPlan.detail ? state.lastPlan.detail : '无'}`,
+      `像素缓冲 ${state.lastPlan && state.lastPlan.buf || '无'}`,
+
       ...state.layouts.map(l => `#${l.id} ${l.vertical ? '竖' : '横'} ${l.fontSize}px ${l.lines}行 ${l.px.w}×${l.px.h}${l.overflow ? ' 溢出' : ''}`)
     ];
     d.textContent = lines.join('\n');
@@ -758,46 +762,93 @@
 
     const boxes = items.filter(it => it.box && it.box.length === 4 && it.zh);
 
-    /* 先算好每个框的像素范围（还没擦，用的是原始图）
-       擦除范围 = 模型给的框 + 余量。
-       擦的范围必须跟画译文的范围一致，否则会「擦了一半、画到别处」，
-       英文原文还露在外面，译文又压在上面，两层字叠着。 */
-    const rects = boxes.map(b => {
+    /* 每个文字块先决定「用气泡掩码」还是「退回矩形」。
+       气泡识别必须在擦之前做——它要读原始像素才能找到气泡底色和边界。
+       识别不出来（字直接压在画面上、根本没有气泡）就老实退回矩形，不假装认到了。 */
+    const core = typeof MXTCore === 'undefined' ? null : MXTCore;
+    let bubbleErr = 0;
+    const plans = boxes.map(b => {
       const [ax1, ay1, ax2, ay2] = b.box.map(Number);
+      const bx = Math.min(ax1, ax2);
+      const by = Math.min(ay1, ay2);
+      const bw = Math.abs(ax2 - ax1);
+      const bh = Math.abs(ay2 - ay1);
+      if (core && typeof core.findBubbleRegion === 'function') {
+        try {
+          const reg = core.findBubbleRegion(buf, { x1: bx, y1: by, x2: bx + bw, y2: by + bh });
+          if (reg && reg.isBubble) return { kind: 'bubble', reg };
+        } catch (e) {
+          /* 识别失败不影响主流程，退回矩形即可；但计数留着，便于排查 */
+          bubbleErr++;
+        }
+      }
       const pad = adaptivePad(b, buf.width, buf.height);
       return {
-        x1: Math.max(0, Math.round((Math.min(ax1, ax2) / 100) * buf.width) - pad.x),
-        y1: Math.max(0, Math.round((Math.min(ay1, ay2) / 100) * buf.height) - pad.y),
-        x2: Math.min(buf.width, Math.round((Math.max(ax1, ax2) / 100) * buf.width) + pad.x),
-        y2: Math.min(buf.height, Math.round((Math.max(ay1, ay2) / 100) * buf.height) + pad.y)
+        kind: 'rect',
+        reg: null,
+        rect: {
+          x1: Math.max(0, Math.round((bx / 100) * buf.width) - pad.x),
+          y1: Math.max(0, Math.round((by / 100) * buf.height) - pad.y),
+          x2: Math.min(buf.width, Math.round(((bx + bw) / 100) * buf.width) + pad.x),
+          y2: Math.min(buf.height, Math.round(((by + bh) / 100) * buf.height) + pad.y)
+        }
       };
     });
 
-    /* 译文排版要按「擦干净的那块区域」来算，而不是模型给的原始框。
-       原始框可能没盖住整个字，擦过之后真正的空白区域更大，
-       译文按大一点的区域排，才不会跟没擦干净的笔画打架。 */
+    /* 排版区必须落在「已经擦干净」的地方：
+       气泡用它自己收窄出来的安全区（椭圆不会被当成矩形撑满），
+       矩形用擦过的范围。两者都不用模型给的原始框——原始框常常没盖住整个字。 */
+    state.lastPlan = {
+      bubble: plans.filter(p => p.kind === 'bubble').length,
+      total: plans.length,
+      core: !!core,
+      hasFn: !!(core && typeof core.findBubbleRegion === 'function'),
+      err: bubbleErr,
+      buf: buf.width + 'x' + buf.height + ' len=' + (buf.data ? buf.data.length : '?'),
+      detail: plans
+        .map(p =>
+          p.kind === 'bubble'
+            ? 'B' + p.reg.fillRatio.toFixed(2)
+            : 'R' + (p.rect.x2 - p.rect.x1) + 'x' + (p.rect.y2 - p.rect.y1)
+        )
+        .join(',')
+    };
+
+    const areas = plans.map(p => (p.kind === 'bubble' ? p.reg.safe : p.rect));
+
     const fits = boxes.map((it, i) => {
-      const r = rects[i];
-      const w = Math.max(20, r.x2 - r.x1);
-      const h = Math.max(14, r.y2 - r.y1);
+      const a = areas[i];
+      const w = Math.max(20, a.x2 - a.x1);
+      const h = Math.max(14, a.y2 - a.y1);
       return fitText(it.zh, w, h);
     });
 
     /* 背景色必须在擦之前全估好：边擦边估的话，后一个框会拿
        「上一个框刚擦出来的白」当背景，越擦越白，整块图都漂移掉。 */
-    const bgs = rects.map(r => estimateBackground(buf, r.x1, r.y1, r.x2, r.y2));
+    const bgs = plans.map(p =>
+      p.kind === 'bubble'
+        ? p.reg.bg
+        : estimateBackground(buf, p.rect.x1, p.rect.y1, p.rect.x2, p.rect.y2)
+    );
 
-    /* 再逐个擦 */
-    rects.forEach((r, i) => eraseBox(buf, r.x1, r.y1, r.x2, r.y2, bgs[i]));
+    /* 再逐个擦：认出气泡的只擦气泡内部（描边和气泡外的画面一个像素都不动），
+       没认出来的退回矩形擦除。 */
+    plans.forEach((p, i) => {
+      if (p.kind === 'bubble' && core && typeof core.eraseBubble === 'function') {
+        core.eraseBubble(buf, p.reg, 1);
+      } else {
+        eraseBox(buf, p.rect.x1, p.rect.y1, p.rect.x2, p.rect.y2, bgs[i]);
+      }
+    });
 
     /* 把擦过的像素写回 canvas */
     ctx.putImageData(new ImageData(buf.data, buf.width, buf.height), 0, 0);
 
     /* 画译文：字号和行数上面已经算好了，直接用 */
     boxes.forEach((it, i) => {
-      const r = rects[i];
+      const a = areas[i];
       const bg = bgs[i] || { r: 255, g: 255, b: 255 };
-      const h = Math.max(14, r.y2 - r.y1);
+      const h = Math.max(14, a.y2 - a.y1);
       const fit = fits[i];
       const fontSize = fit.fontSize;
 
@@ -806,10 +857,10 @@
       ctx.textBaseline = 'top';
       ctx.textAlign = 'center';
 
-      const cx = (r.x1 + r.x2) / 2;
+      const cx = (a.x1 + a.x2) / 2;
       /* 整体垂直居中 */
       const totalH = fit.lines.length * fontSize * 1.22;
-      let ty = r.y1 + Math.max(0, (h - totalH) / 2);
+      let ty = a.y1 + Math.max(0, (h - totalH) / 2);
 
       /* 描边：不管底色深浅都看得清 */
       ctx.lineWidth = Math.max(2, fontSize / 7);

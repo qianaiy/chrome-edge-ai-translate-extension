@@ -97,6 +97,9 @@ function drawPage(w, h) {
   const rect = (x1, y1, x2, y2, r, g, b) => {
     for (let y = y1; y < y2; y++) for (let x = x1; x < x2; x++) put(x, y, r, g, b);
   };
+  /* 页脚一条深色横带：验证「背景复杂的气泡」不会把字也吞掉。
+     必须画在气泡**之前** —— 画在之后会把气泡盖掉一半，那是无效场景。 */
+  rect(0, Math.round(h * 0.78), w, h, 40, 45, 60);
   for (const b of BUBBLES) {
     const x1 = Math.round((b.box[0] / 100) * w);
     const y1 = Math.round((b.box[1] / 100) * h);
@@ -118,8 +121,6 @@ function drawPage(w, h) {
       rect(x1 + 24, by, x2 - 24, by + 8, 20, 20, 20);
     }
   }
-  /* 页脚一条深色横带：验证「背景复杂的气泡」不会把字也吞掉 */
-  rect(0, Math.round(h * 0.78), w, h, 40, 45, 60);
   return encodePng(w, h, buf);
 }
 
@@ -553,19 +554,32 @@ async function main() {
       `(async () => {
          const ov = document.querySelector('.mxt-comic-overlay[src]');
          if (!ov) return { err: '没有擦字图层' };
-         const im = new Image();
-         await new Promise(r => { im.onload = r; im.onerror = r; im.src = ov.src; });
+         const load = async (u) => {
+           const im = new Image();
+           await new Promise(r => { im.onload = r; im.onerror = r; im.src = u; });
+           return im;
+         };
+         const im = await load(ov.src);
          if (!im.naturalWidth) return { err: '图层解码失败' };
-         const c = document.createElement('canvas');
-         c.width = im.naturalWidth; c.height = im.naturalHeight;
-         const cx = c.getContext('2d');
-         cx.drawImage(im, 0, 0);
-         const W = c.width, H = c.height;
-         const d = cx.getImageData(0, 0, W, H).data;
+         const orgEl = document.getElementById('manga');
+         const org = await load(orgEl ? orgEl.src : ov.src);
+         const grab = (img) => {
+           const c = document.createElement('canvas');
+           c.width = img.naturalWidth; c.height = img.naturalHeight;
+           const cx = c.getContext('2d');
+           cx.drawImage(img, 0, 0);
+           return { W: c.width, H: c.height, d: cx.getImageData(0, 0, c.width, c.height).data };
+         };
+         const A = grab(im);
+         const B = grab(org);
+         const W = A.W, H = A.H;
+         const d = A.d, o = B.d;
+         const same = A.W === B.W && A.H === B.H;
          const dark = (x, y) => {
            const i = (y * W + x) * 4;
            return d[i] < 90 && d[i+1] < 90 && d[i+2] < 90;
          };
+         const lum = (arr, i) => 0.299 * arr[i] + 0.587 * arr[i+1] + 0.114 * arr[i+2];
          const out = [];
          for (const b of ${JSON.stringify(BUBBLES.map(b => b.box))}) {
            const x1 = Math.round(b[0] / 100 * W), y1 = Math.round(b[1] / 100 * H);
@@ -581,9 +595,40 @@ async function main() {
                if (dark(x, y1 + t)) ring++;
                if (dark(x, y2 - 1 - t)) ring++;
              }
-           out.push({ box: b, inkRatio: +(ink / (tot || 1)).toFixed(3), ringRatio: +(ring / (rtot || 1)).toFixed(3) });
+           /* 越界检查：拿原图逐点比。
+              - borderDiff：3px 描边圈，擦到它整条边都会明显变亮
+              - outsideDiff：边框外 5~9px 的一圈，矩形擦除会把这里一起漂白
+              用整圈均值比较，单点 JPEG 噪声会被平均掉。 */
+           let outsideSum = 0, outsideN = 0, borderSum = 0, borderN = 0;
+           if (same) {
+             for (let y = y1 - 9; y < y2 + 9; y++) {
+               for (let x = x1 - 9; x < x2 + 9; x++) {
+                 if (x < 1 || y < 1 || x >= W - 1 || y >= H - 1) continue;
+                 const p = (y * W + x) * 4;
+                 const delta = Math.abs(lum(d, p) - lum(o, p));
+                 if (x >= x1 && x < x2 && y >= y1 && y < y2) {
+                   const onBorder = x < x1 + 3 || x >= x2 - 3 || y < y1 + 3 || y >= y2 - 3;
+                   if (onBorder) { borderSum += delta; borderN++; }
+                   continue;
+                 }
+                 const dx = x < x1 ? x1 - x : x >= x2 ? x - x2 + 1 : 0;
+                 const dy = y < y1 ? y1 - y : y >= y2 ? y - y2 + 1 : 0;
+                 const dist = Math.max(dx, dy);
+                 if (dist <= 4 || dist > 9) continue;
+                 outsideSum += delta;
+                 outsideN++;
+               }
+             }
+           }
+           out.push({
+             box: b,
+             inkRatio: +(ink / (tot || 1)).toFixed(3),
+             ringRatio: +(ring / (rtot || 1)).toFixed(3),
+             borderDiff: +(borderSum / (borderN || 1)).toFixed(2),
+             outsideDiff: +(outsideSum / (outsideN || 1)).toFixed(2)
+           });
          }
-         return { size: [W, H], out };
+         return { size: [W, H], same, out };
        })()`
     );
     console.log('  像素检测    ：', JSON.stringify(PIXEL));
@@ -594,6 +639,11 @@ async function main() {
       record('每个气泡内都有新画的字', noInk.length === 0, noInk.length ? `缺字：${noInk.join(' / ')}` : '全部有字');
       const eaten = PIXEL.out.filter(o => o.ringRatio < 0.5).map(o => `${o.box.join(',')}=${o.ringRatio}`);
       record('气泡描边没有被擦掉', eaten.length === 0, eaten.join(' | ') || '描边完整');
+      if (!PIXEL.same) record('擦字图层与原图同尺寸', false, `图层 ${JSON.stringify(PIXEL.size)}`);
+      const spill = PIXEL.out.filter(o => o.outsideDiff > 2.5).map(o => `${o.box.join(',')}=${o.outsideDiff}`);
+      record('气泡外部画面没有被擦到', !!PIXEL.same && spill.length === 0, spill.join(' | ') || '边界干净');
+      const borderDirty = PIXEL.out.filter(o => o.borderDiff > 2.5).map(o => `${o.box.join(',')}=${o.borderDiff}`);
+      record('描边像素与原图逐点一致', !!PIXEL.same && borderDirty.length === 0, borderDirty.join(' | ') || '未被改动');
     }
 
     /* ---- 恢复原尺寸，切到浮层模式做排版检查 ---- */
@@ -697,6 +747,12 @@ async function main() {
       'Debug Mode 输出尺寸与字号',
       !!dbg2 && /原始尺寸/.test(dbg2) && /显示尺寸/.test(dbg2) && /px/.test(dbg2),
       String(dbg2 || '').replace(/\n/g, ' / ').slice(0, 170)
+    );
+    const bubbleHit = /气泡识别 (\d+)\/(\d+)/.exec(String(dbg2 || ''));
+    record(
+      '气泡识别真的生效（不是退回矩形）',
+      !!bubbleHit && Number(bubbleHit[1]) === Number(bubbleHit[2]) && Number(bubbleHit[1]) > 0,
+      bubbleHit ? `识别 ${bubbleHit[1]}/${bubbleHit[2]}` : 'Debug 里没有气泡识别结果'
     );
     await shot(page.session, '05-debug.png');
   } catch (e) {
