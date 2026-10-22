@@ -1,5 +1,19 @@
 'use strict';
 
+/* 共享核心：构建时把 src/core/*.ts 打成 core.js（IIFE，挂全局 MXTCore），
+   服务工作者在启动时同步加载它。
+
+   在它之前，core.js 只是「测试用的事实来源」—— 运行时根本没有东西加载，
+   真正的实现是下面每个函数各一份复制品。名不副实，而且漂移只能靠测试发现。 */
+if (typeof importScripts === 'function') importScripts('core.js');
+
+const MXT_CORE = typeof MXTCore === 'undefined' ? null : MXTCore;
+if (!MXT_CORE) {
+  /* 不要在这里退化成本地实现：那样「共享核心」又变回一句空话，
+     而且会静默跑起一份和测试不同的代码。宁可明确地失败。 */
+  throw new Error('共享核心 core.js 没有加载，请重新构建（npm run build）后再加载扩展');
+}
+
 /* ------------------------------------------------------------------ *
  * 译点 · 自建 AI 翻译
  * 后台：配置管理、协议自动识别、调用模型、翻译缓存
@@ -319,13 +333,15 @@ function buildRequest(protocol, settings, messages, opts = {}) {
     const cleanModel = model.replace(/^models\//, '');
     const method = stream ? 'streamGenerateContent' : 'generateContent';
 
-    const qs = [];
-    if (stream) qs.push('alt=sse');
-    if (key) qs.push('key=' + encodeURIComponent(key));
+    /* key 走请求头，不进 URL。
+       URL 会留在浏览器历史、扩展日志、代理访问记录里，还可能随 Referer 外泄；
+       Gemini 官方支持 x-goog-api-key，没有理由把它塞进查询串。 */
+    const geminiHeaders = { 'Content-Type': 'application/json' };
+    if (key) geminiHeaders['x-goog-api-key'] = key;
 
     const url =
       `${root}/${version}/models/${encodeURIComponent(cleanModel)}:${method}` +
-      (qs.length ? `?${qs.join('&')}` : '');
+      (stream ? '?alt=sse' : '');
 
     const contents = messages
       .filter(m => m.role !== 'system')
@@ -347,7 +363,7 @@ function buildRequest(protocol, settings, messages, opts = {}) {
     if (maxTokens) body.generationConfig.maxOutputTokens = maxTokens;
     if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
 
-    return { url, headers: { 'Content-Type': 'application/json' }, body };
+    return { url, headers: geminiHeaders, body };
   }
 
   // openai 兼容
@@ -407,29 +423,67 @@ function extractText(json) {
   return null;
 }
 
+/* ------------------------- 错误处理 ------------------------- */
+
+/**
+ * 从错误文本里抹掉 API Key。
+ *
+ * 上游经常把 Key 回显在错误体里（"Incorrect API key provided: sk-…"），
+ * 而这段文本最终会显示在弹窗、页面的错误提示里。抛给用户之前先擦掉。
+ * 用 split/join 而不是正则，避免 Key 里的 . * + 等字符被当成元字符。
+ */
+function redactSecrets(text, key) {
+  const k = String(key || '').trim();
+  const s = String(text == null ? '' : text);
+  if (!k) return s;
+  return s.split(k).join('<已隐藏>');
+}
+
 /* ------------------------- 单次调用 ------------------------- */
 
-const RETRYABLE_STATUS = new Set([400, 401, 403, 404, 405, 422]);
+/* 400/404/405/422 多半是「协议形状不对」，换一种协议值得试。
+   401/403 是鉴权失败 —— 换协议也一样失败，只会多打两次请求、
+   把真正的错误埋在三行重复信息里，所以单独拎出来。 */
+const RETRYABLE_STATUS = new Set([400, 404, 405, 422]);
+
+/* 鉴权类状态码：Key 无效 / 没有该模型权限 / 额度不足，重试协议没有意义 */
+const AUTH_STATUS = new Set([401, 403]);
 
 /* 有些接口不认 max_tokens（只认 max_completion_tokens）——这种 400 换协议救不了，
    要让调用方去掉限制重试，而不是傻乎乎地去试 Anthropic / Gemini */
 const MAX_TOKENS_RE = /max_tokens|max_completion_tokens|maxoutputtokens/i;
 
-async function callOnce(protocol, settings, messages) {
+async function callOnce(protocol, settings, messages, opts) {
   const req = buildRequest(protocol, settings, messages);
+  assertEndpoint(req.url);
+
+  /* 识图这类请求可能被上游挂住很久。opts.timeoutMs 为零表示不设限。 */
+  const timeoutMs = Number(opts && opts.timeoutMs) || 0;
+  const ac = timeoutMs > 0 ? new AbortController() : null;
+  const timer = ac ? setTimeout(() => ac.abort(), timeoutMs) : null;
 
   let res;
   try {
     res = await fetch(req.url, {
       method: 'POST',
       headers: req.headers,
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(req.body),
+      ...(ac ? { signal: ac.signal } : {})
     });
   } catch (e) {
-    const err = new Error(`连不上接口：${e?.message || e}（检查 Base URL、网络或代理）`);
+    if (timer) clearTimeout(timer);
+    const aborted = e && e.name === 'AbortError';
+    const err = new Error(
+      aborted
+        ? `接口超时：${Math.round(timeoutMs / 1000)} 秒没有响应（模型卡住或上游排队）`
+        : `连不上接口：${redactSecrets(e?.message || String(e), settings.apiKey)}（检查 Base URL、网络或代理）`
+    );
     err.retryable = false;
     throw err;
   }
+  if (timer) clearTimeout(timer);
+
+  assertNoCrossOriginRedirect(req.url, res);
 
   const raw = await res.text();
   let json = null;
@@ -446,10 +500,23 @@ async function callOnce(protocol, settings, messages) {
       json?.error ||
       raw.slice(0, 300) ||
       '(空响应)';
-    const err = new Error(
-      `接口 ${res.status}：${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+    /* 上游可能把 Key 回显在错误体里，这段文字最终会原样显示给用户 */
+    const detailText = redactSecrets(
+      typeof detail === 'string' ? detail : JSON.stringify(detail),
+      settings.apiKey
     );
-    const detailText = typeof detail === 'string' ? detail : JSON.stringify(detail);
+
+    if (AUTH_STATUS.has(res.status)) {
+      const err = new Error(
+        `接口 ${res.status}：${detailText}\n` +
+          '（API Key 无效、没有该模型的权限，或额度不足 —— 去设置页检查 Key 与模型名）'
+      );
+      err.retryable = false;
+      err.auth = true;
+      throw err;
+    }
+
+    const err = new Error(`接口 ${res.status}：${detailText}`);
     err.maxTokens = MAX_TOKENS_RE.test(detailText);
     err.retryable = RETRYABLE_STATUS.has(res.status) && !err.maxTokens;
     throw err;
@@ -481,13 +548,16 @@ async function chat(settings, messages) {
       }
       return { text, protocol };
     } catch (e) {
-      errors.push(`${PROTOCOL_LABEL[protocol]}：${e?.message || e}`);
+      errors.push(
+        `${PROTOCOL_LABEL[protocol]}：${redactSecrets(String(e?.message || e), settings.apiKey)}`
+      );
       if (e?.retryable === false) break;
     }
   }
 
-  if (errors.length === 1) throw new Error(errors[0]);
-  throw new Error('三种协议都没成功：\n' + errors.join('\n'));
+  /* 兜底再擦一遍：流式分支的错误不经过 callOnce 的脱敏 */
+  if (errors.length === 1) throw new Error(redactSecrets(errors[0], settings.apiKey));
+  throw new Error(redactSecrets('三种协议都没成功：\n' + errors.join('\n'), settings.apiKey));
 }
 
 /* ------------------------- 流式调用 ------------------------- */
@@ -515,6 +585,7 @@ function extractDelta(json) {
 
 async function callOnceStream(protocol, settings, messages, onDelta, opts = {}) {
   const req = buildRequest(protocol, settings, messages, { stream: true, maxTokens: opts.maxTokens });
+  assertEndpoint(req.url);
 
   /* 上游「不吐字也不断开」是最难受的情况：页面会一直卡在「翻译中」。
      所以给流式读取加一个「多久没新内容就放弃」的看门狗。 */
@@ -569,6 +640,13 @@ async function callOnceStream(protocol, settings, messages, onDelta, opts = {}) 
     throw err;
   }
 
+  try {
+    assertNoCrossOriginRedirect(req.url, res);
+  } catch (e) {
+    stopStall();
+    throw e;
+  }
+
   const contentType = (res.headers && typeof res.headers.get === 'function' && res.headers.get('content-type')) || '';
 
   // 有些代理无视 stream 参数，直接回整包 JSON —— 当一次性 delta 处理
@@ -584,10 +662,21 @@ async function callOnceStream(protocol, settings, messages, onDelta, opts = {}) 
         /* 非 JSON */
       }
       const detail = json?.error?.message || json?.message || json?.error || raw.slice(0, 300) || '(空响应)';
-      const err = new Error(
-        `接口 ${res.status}：${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+      /* 和 callOnce 一样：上游可能把 Key 回显在错误体里，这段文字会显示给用户 */
+      const detailText = redactSecrets(
+        typeof detail === 'string' ? detail : JSON.stringify(detail),
+        settings.apiKey
       );
-      const detailText = typeof detail === 'string' ? detail : JSON.stringify(detail);
+      if (AUTH_STATUS.has(res.status)) {
+        const err = new Error(
+          `接口 ${res.status}：${detailText}\n` +
+            '（API Key 无效、没有该模型的权限，或额度不足 —— 去设置页检查 Key 与模型名）'
+        );
+        err.retryable = false;
+        err.auth = true;
+        throw err;
+      }
+      const err = new Error(`接口 ${res.status}：${detailText}`);
       err.maxTokens = MAX_TOKENS_RE.test(detailText);
       err.retryable = RETRYABLE_STATUS.has(res.status) && !err.maxTokens;
       throw err;
@@ -835,20 +924,25 @@ async function listModelsOnce(protocol, settings) {
     }
   } else if (protocol === 'gemini') {
     const root = base.replace(/\/models\/[^/]+$/i, '').replace(/\/(v1beta|v1)$/i, '');
-    url = `${root}/v1beta/models?pageSize=200` + (key ? `&key=${encodeURIComponent(key)}` : '');
+    url = `${root}/v1beta/models?pageSize=200`;
+    if (key) headers['x-goog-api-key'] = key;
   } else {
     url = base + '/models';
     if (key) headers.Authorization = 'Bearer ' + key;
   }
 
+  assertEndpoint(url);
+
   let res;
   try {
     res = await fetch(url, { method: 'GET', headers });
   } catch (e) {
-    const err = new Error(`连不上接口：${e?.message || e}`);
+    const err = new Error(`连不上接口：${redactSecrets(e?.message || String(e), settings.apiKey)}`);
     err.retryable = false;
     throw err;
   }
+
+  assertNoCrossOriginRedirect(url, res);
 
   const raw = await res.text();
   let json = null;
@@ -862,7 +956,10 @@ async function listModelsOnce(protocol, settings) {
     const detail =
       json?.error?.message || json?.message || json?.error || raw.slice(0, 200) || '(空响应)';
     const err = new Error(
-      `接口 ${res.status}：${typeof detail === 'string' ? detail : JSON.stringify(detail)}`
+      `接口 ${res.status}：${redactSecrets(
+        typeof detail === 'string' ? detail : JSON.stringify(detail),
+        settings.apiKey
+      )}`
     );
     err.retryable = RETRYABLE_STATUS.has(res.status);
     throw err;
@@ -917,6 +1014,42 @@ function isLocalEndpoint(baseURL) {
   return !!provider && LOCAL_PROVIDERS.has(provider.id);
 }
 
+/* ---------------------- 地址信任边界 ---------------------- */
+
+/* 实现只在 src/core/endpoint.ts 里。构建时打成 core.js，服务工作者启动时
+   用 importScripts 加载（见文件顶部），这里只是取出来用。
+
+   以前这里还有一整份复制品，靠 tests/endpoint-parity.test.ts 比对两边 ——
+   那是笔明账：每加一条规则要改两遍、再补一条一致性测试；而漏改的代价是
+   「设置页放行了、后台没放行」这种看不见的分叉。 */
+const { checkEndpoint, isLocalHost, sameOrigin, redirectWarning } = MXT_CORE;
+
+for (const name of ['checkEndpoint', 'isLocalHost', 'sameOrigin', 'redirectWarning']) {
+  if (typeof MXT_CORE[name] !== 'function') {
+    throw new Error(`共享核心缺少 ${name}，请重新构建（npm run build）`);
+  }
+}
+
+/** 发请求前的最后一道闸：地址不可信就直接停，不要等到 Key 已经发出去 */
+function assertEndpoint(url) {
+  const policy = checkEndpoint(url);
+  if (policy.ok) return;
+  const err = new Error(policy.message || '翻译服务地址不可用');
+  err.retryable = false;
+  err.endpoint = true;
+  throw err;
+}
+
+/** 响应回来后检查有没有被重定向到别的站点 */
+function assertNoCrossOriginRedirect(requestURL, response) {
+  const warn = redirectWarning(requestURL, response && response.url);
+  if (!warn) return;
+  const err = new Error(warn);
+  err.retryable = false;
+  err.endpoint = true;
+  throw err;
+}
+
 /**
  * 配置够不够开始翻译。
  * 规则和弹窗保持一致：baseURL 和 model 必须有；apiKey 远程必须要，本地可以为空。
@@ -928,6 +1061,10 @@ function configProblem(settings) {
   const model = String(settings.model || '').trim();
 
   if (!baseURL) return '还没配置接口，点扩展图标 → 打开设置';
+  /* 地址本身不可信（明文公网 / 带凭证 / 非 http）时，先拦在这里，
+     不要让用户等到翻译时才看到一个网络错误 */
+  const endpoint = checkEndpoint(baseURL);
+  if (!endpoint.ok) return endpoint.message;
   if (!model) return '还没选模型，点扩展图标 → 打开设置';
   if (!apiKey && !isLocalEndpoint(baseURL)) {
     return '还没填 API Key，点扩展图标 → 打开设置';
@@ -949,135 +1086,27 @@ function describeEndpoint(settings) {
   };
 }
 
-function stripMarkers(text) {  return String(text || '')
-    .replace(/^\s*<<<\s*\d+\s*>>>\s*/, '')
-    .trim();
-}
+/* ------------------------- 提示词与标记 ------------------------- */
 
-function systemPromptSingle(s, glossaryEntries) {
-  const extra = String(s.extraPrompt || '').trim();
-  const lines = [
-    `你是专业翻译。把用户给出的一段文本翻译成${s.targetLang}。`,
-    '要求：只输出译文本身，不要编号、不要解释、不要加引号、不要复述原文。',
-    '保持原文语气与术语；代码、URL、变量名、占位符原样保留。',
-    '若原文已是目标语言，直接原样输出。'
-  ];
-  if (extra) lines.push(`额外要求：${extra}`);
-  const gl = glossaryInstruction(glossaryEntries);
-  if (gl) lines.push(gl);
-  return lines.join('\n');
-}
+/* 实现在 src/core：提示词与标记解析在 prompt.ts，术语表挑选在 cache.ts。
+   服务工作者通过 importScripts 加载的 MXTCore 拿到同一份代码，
+   tests/integration.test.ts 会验证接线成功。 */
+const {
+  systemPrompt,
+  systemPromptSingle,
+  stripMarkers,
+  parseMarked,
+  MARK_RE,
+  looksTechnical,
+  selectGlossaryEntries
+} = MXT_CORE;
 
-/* ------------------------- 术语表 ------------------------- */
-
-/* 术语表相关的纯逻辑跟 src/core/cache.ts 保持一致，
-   tests/integration.test.ts 会验证两边行为相同。 */
-
-/** 判断一段内容算不算「技术类」 */
-function looksTechnical(text) {
-  const s = String(text || '');
-  if (!s.trim()) return false;
-  return (
-    /[{}<>]/.test(s) ||
-    /\b(?:const|let|var|function|return|import|export|class|def|async|await|public|private|static)\b/.test(s) ||
-    /\b\w+\([^)]*\)/.test(s) ||
-    /\b[a-z]+_[a-z]+\b/.test(s) ||
-    /https?:\/\//.test(s) ||
-    /=>|::|\$[A-Za-z_]/.test(s) ||
-    /\b(?:npm|yarn|pnpm|git|docker|kubectl|curl|apt|pip|node|python|api|json|xml|yaml|sql|html|css|javascript|typescript|py|go|rust|java)\b/i.test(
-      s
-    )
-  );
-}
-
-function escapeRegExp(s) {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-}
-
-/** 从术语表里挑出这一批文本该用的术语 */
-function selectGlossaryEntries(glossary, text, scope) {
-  if (!glossary || !Array.isArray(glossary.entries) || !glossary.entries.length) return [];
-  const s = String(text || '');
-  if (!s) return [];
-  const tech = scope === 'technical' || looksTechnical(s);
-  const hits = [];
-
-  for (const e of glossary.entries) {
-    if (!e || !e.source || !e.target) continue;
-    if (e.scope === 'technical' && !tech) continue;
-    const match = e.match || 'case-insensitive';
-    let found = false;
-    if (match === 'exact') {
-      found = s.includes(e.source);
-    } else if (match === 'word') {
-      found = new RegExp(`\\b${escapeRegExp(e.source)}\\b`, 'i').test(s);
-    } else {
-      found = s.toLowerCase().includes(e.source.toLowerCase());
-    }
-    if (found) hits.push(e);
-  }
-  hits.sort((a, b) => (b.priority || 0) - (a.priority || 0));
-  return hits;
-}
-
-/** 把命中的术语整理成能拼进系统提示词的一段话 */
-function glossaryInstruction(entries) {
-  if (!entries || !entries.length) return '';
-  const lines = entries.map(e => `- ${e.source} → ${e.target}`);
-  return ['以下是本批文本中必须用到的术语（只译这些词，其余照常翻译）：', ...lines].join('\n');
-}
-
-/* ------------------------- 提示词 ------------------------- */
-
-function systemPrompt(s, glossaryEntries) {
-  const extra = String(s.extraPrompt || '').trim();
-  const lines = [
-    `你是专业翻译。把用户给出的每一段文本翻译成${s.targetLang}。`,
-    '严格遵守：',
-    '1. 输出必须沿用输入的编号标记 <<<n>>>，每段译文前一个，数量和顺序都不能变。',
-    '2. 只输出译文，不要解释、不要加引号、不要拆分或合并段落。',
-    '3. 保持原文语气与术语统一；技术内容按行业惯例翻译，不要生硬直译。',
-    '4. 代码、命令、URL、邮箱、变量名、占位符（如 %s、{name}、<tag>）保持原样。',
-    '5. 数字加单位（如 25 MB）、HTML 实体（如 &amp; &nbsp; &mdash;）也保持原样，不要换算、不要解码。',
-    '6. 某段本身已是目标语言、或只是数字/符号，就原样返回该段，一个字都不要改。',
-    '7. 每一段都必须真的翻译：哪怕原文很短、像命令或技术名词，也要给出目标语言的版本，不要把原文原样抄回来。',
-    '8. 原文里形如 {{1}}、{{2}} 的标记表示分段位置，必须原样保留、顺序不变，只翻译标记后面的文字。'
-  ];
-  if (extra) lines.push(`额外要求：${extra}`);
-
-  /* 术语表：只把这一批命中的术语告诉模型，不塞整本词典。
-     用「约束」而不是「替换」—— 同一个词在不同语境下译法不同，
-     硬替换会把对的译文改错。 */
-  const gl = glossaryInstruction(glossaryEntries);
-  if (gl) lines.push(gl);
-
-  return lines.join('\n');
-}
-
-/** 从术语表里挑出这一批文本该用的术语 */
+/** 从术语表里挑出这一批文本该用的术语（settings 形状的薄包装） */
 function selectGlossary(settings, texts) {
   const g = settings && settings.glossary;
   if (!g || !Array.isArray(g.entries) || !g.entries.length) return [];
   const joined = (Array.isArray(texts) ? texts : [texts]).join('\n');
   return selectGlossaryEntries(g, joined);
-}
-
-/* ------------------------- 标记解析 ------------------------- */
-
-const MARK_RE = /<<<\s*(\d+)\s*>>>([\s\S]*?)(?=<<<\s*\d+\s*>>>|$)/g;
-
-function parseMarked(text, count) {
-  const out = new Array(count).fill(null);
-  MARK_RE.lastIndex = 0;
-  let m;
-  while ((m = MARK_RE.exec(text)) !== null) {
-    const i = Number(m[1]) - 1;
-    if (i >= 0 && i < count) {
-      const v = m[2].trim();
-      if (v) out[i] = v;
-    }
-  }
-  return out;
 }
 
 /* ------------------------- 批量翻译 ------------------------- */
@@ -1358,7 +1387,9 @@ async function runSubtitle(tabId) {
 async function runComic(tabId) {
   const target = { tabId };
   try {
-    await chrome.scripting.executeScript({ target, files: ['content/comic.js'] });
+    /* 先注入共享核心：漫画的擦字/排版要用 core 里的气泡识别与 fitText。
+       内容脚本拿不到 service worker 的 importScripts 结果，只能在这里按顺序注入。 */
+    await chrome.scripting.executeScript({ target, files: ['core.js', 'content/comic.js'] });
   } catch (_) {
     /* 可能是受限页面 */
   }
@@ -1426,7 +1457,9 @@ async function transcribeAudio(audioBase64, mediaType, settings) {
       const key = String(settings.apiKey || '').trim();
       if (key) headers.Authorization = 'Bearer ' + key;
 
+      assertEndpoint(url);
       const res = await fetch(url, { method: 'POST', headers, body: form });
+      assertNoCrossOriginRedirect(url, res);
       const raw = await res.text();
       if (!res.ok) {
         const detail = (() => {
@@ -1437,7 +1470,7 @@ async function transcribeAudio(audioBase64, mediaType, settings) {
             return raw.slice(0, 200);
           }
         })();
-        const err = new Error(`接口 ${res.status}：${detail}`);
+        const err = new Error(`接口 ${res.status}：${redactSecrets(String(detail), key)}`);
         err.retryable = false;
         throw err;
       }
@@ -1493,10 +1526,12 @@ async function transcribeAudio(audioBase64, mediaType, settings) {
       const key = String(settings.apiKey || '').trim();
       if (key) headers['x-goog-api-key'] = key;
 
+      assertEndpoint(url);
       const res = await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) });
+      assertNoCrossOriginRedirect(url, res);
       const raw = await res.text();
       if (!res.ok) {
-        const err = new Error(`接口 ${res.status}：${raw.slice(0, 200)}`);
+        const err = new Error(`接口 ${res.status}：${redactSecrets(raw.slice(0, 200), key)}`);
         err.retryable = false;
         throw err;
       }
@@ -1574,7 +1609,7 @@ async function translateImage(imageBase64, mediaType, settings, targetLang) {
   const errors = [];
   for (const protocol of order) {
     try {
-      const text = await callOnce(protocol, useModel, messages);
+      const text = await callOnce(protocol, useModel, messages, { timeoutMs: 180000 });
       const parsed = parseImageJson(text);
       if (parsed) return { items: parsed, protocol };
       errors.push(`${PROTOCOL_LABEL[protocol]}：返回的不是 JSON`);
@@ -1618,15 +1653,98 @@ function parseImageJson(raw) {
   return null;
 }
 
+/* 后台只接受这几种消息。用白名单而不是「认不出来就忽略」：
+   将来加新类型必须先在这里登记，否则运行时直接拒掉；也避免某个分支
+   被意料之外的 type 走到。有测试扫源码比对这张表，防止漏登记。 */
+const MESSAGE_TYPES = new Set([
+  'mxt:getSettings',
+  'mxt:configStatus',
+  'mxt:translate',
+  'mxt:tabToggle',
+  'mxt:tabDisplay',
+  'mxt:tabSubtitle',
+  'mxt:tabComic',
+  'mxt:transcribe',
+  'mxt:translateImage',
+  'mxt:fetchImage',
+  'mxt:tabStatus',
+  'mxt:version',
+  'mxt:detect',
+  'mxt:probe',
+  'mxt:models',
+  'mxt:test',
+  'mxt:clearCache',
+  'mxt:clearAll'
+]);
+
+/* 页面里的 <img> 常常和页面不同源（漫画站把图放在 CDN 上，还不给 CORS 头）。
+   这时 drawImage 会把画布标记为「被污染」，getImageData / toDataURL 全都抛错 ——
+   读不出像素就没法识别文字，也没法擦字重绘。
+
+   后台有 host_permissions，fetch 不受 CORS 约束，可以替页面把字节取回来，
+   页面再拿 data: URL 造一张同源副本，画布就干净了。
+
+   这条通道等于「按任意 URL 取二进制」，所以只放行 http/https：
+   file://、扩展内部资源、chrome:// 一律拒绝。credentials 用 omit，
+   免得把用户的登录态 Cookie 发给任意图片地址。 */
+const IMAGE_FETCH_LIMIT = 12 * 1024 * 1024;
+
+async function fetchImageBytes(url) {
+  let u;
+  try {
+    u = new URL(String(url || ''));
+  } catch {
+    return { ok: false, error: '图片地址不合法' };
+  }
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') {
+    return { ok: false, error: '只支持 http/https 图片' };
+  }
+  try {
+    const res = await fetch(u.href, { credentials: 'omit', redirect: 'follow' });
+    if (!res.ok) return { ok: false, error: `取图失败（HTTP ${res.status}）` };
+    const type = String(res.headers.get('content-type') || '').split(';')[0].trim().toLowerCase();
+    if (type && !type.startsWith('image/')) {
+      return { ok: false, error: '这个地址不是图片：' + type };
+    }
+    const buf = new Uint8Array(await res.arrayBuffer());
+    if (!buf.length) return { ok: false, error: '图片是空的' };
+    if (buf.byteLength > IMAGE_FETCH_LIMIT) {
+      return { ok: false, error: '图片太大（超过 12 MB）' };
+    }
+    let bin = '';
+    const chunk = 0x8000;
+    for (let i = 0; i < buf.length; i += chunk) {
+      bin += String.fromCharCode.apply(null, buf.subarray(i, i + chunk));
+    }
+    return { ok: true, mediaType: type || 'image/jpeg', data: btoa(bin) };
+  } catch (e) {
+    return { ok: false, error: '取图失败：' + (e?.message || String(e)) };
+  }
+}
+
 chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   (async () => {
     try {
       if (!msg || typeof msg.type !== 'string') {
         return sendResponse({ ok: false, error: '无法识别的消息' });
       }
+      if (!MESSAGE_TYPES.has(msg.type)) {
+        return sendResponse({ ok: false, error: '未知消息类型：' + msg.type });
+      }
+
+      if (msg.type === 'mxt:fetchImage') {
+        return sendResponse(await fetchImageBytes(msg.url));
+      }
 
       if (msg.type === 'mxt:getSettings') {
-        return sendResponse({ ok: true, settings: await getSettings() });
+        /* 只把「页面侧需要知道的」发出去，apiKey 留在后台。
+           内容脚本跑在每一个被翻译的页面上，多一处能拿到 Key 的地方
+           就多一处泄漏面；需要 Key 的请求全部由后台代发。 */
+        const { apiKey, ...safe } = await getSettings();
+        return sendResponse({
+          ok: true,
+          settings: { ...safe, hasKey: !!String(apiKey || '').trim() }
+        });
       }
 
       /* 配置体检：弹窗和后台共用同一套规则，避免两边说法不一致 */
@@ -1742,7 +1860,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       }
 
       if (msg.type === 'mxt:detect') {
-        return sendResponse({ ok: true, ...describeEndpoint({ baseURL: msg.baseURL }) });
+        /* 顺带把地址信任检查的结果带回设置页：用户在输入时就能看到
+           「明文公网 / 带凭证」这类问题，而不是等到点「测试连接」才撞一个网络错误 */
+        return sendResponse({
+          ok: true,
+          endpoint: checkEndpoint(msg.baseURL),
+          ...describeEndpoint({ baseURL: msg.baseURL })
+        });
       }
 
       if (msg.type === 'mxt:probe') {
@@ -1775,6 +1899,15 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         memCache = null;
         await chrome.storage.local.remove(['cache', 'protocolHints']);
         protocolHints = null;
+        return sendResponse({ ok: true });
+      }
+
+      if (msg.type === 'mxt:clearAll') {
+        /* 用户主动点「清除全部数据」：配置、Key、译文缓存、协议记忆一起抹掉，
+           回到刚装好的状态。内存里的缓存也要清，否则同一个会话里还能命中。 */
+        memCache = null;
+        protocolHints = null;
+        await chrome.storage.local.clear();
         return sendResponse({ ok: true });
       }
 

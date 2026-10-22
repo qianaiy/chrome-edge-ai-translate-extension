@@ -69,6 +69,8 @@ async function loadBackgroundFns(): Promise<Record<string, any>> {
 
   /* new Function 的函数体是语句列表，必须显式 return 才有值 */
   const wrapped = `return (function(){ ${src}\n return { normBase, detectProvider, resolveBase, guessProtocol, protocolOrder, buildRequest, extractText, extractDelta, parseMarked, systemPrompt, systemPromptSingle, stripMarkers, configProblem, isLocalEndpoint }; })();`;
+  /* 服务工作者用 importScripts 加载 core.js；Node 里把同一份源码挂到全局 */
+  (globalThis as unknown as { MXTCore: unknown }).MXTCore = await import('../src/core/core.js');
   const fn = new Function('chrome', 'fetch', 'console', wrapped);
   return fn(chromeStub, globalThis.fetch, console);
 }

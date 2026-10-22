@@ -425,14 +425,17 @@
           <button class="primary" id="save">保存全部</button>
           <button id="test">测试连接</button>
           <button id="clearCache">清空翻译缓存</button>
+          <button id="clearAll">清除全部数据</button>
           <span id="testResult"></span>
         </div>
         <div class="hint">
           开关和下拉框<strong>改完立刻生效</strong>，不用点保存。<br />
-          「保存全部」只在你一次改了多个输入框（接口、模型、密钥这些）时才需要点。
+          「保存全部」只在你一次改了多个输入框（接口、模型、密钥这些）时才需要点。<br />
+          「清除全部数据」会把<strong>接口地址、API Key、模型选择、译文缓存</strong>全部抹掉，回到刚装好的状态；
+          因为一旦设好就会自动记住 Key，想彻底断掉只能整份删。
         </div>
         <div class="warn">
-          扩展需要「读取你在所有网站上的数据」权限，因为划词和整页翻译必须注入页面。它不收集、不上传任何浏览数据；
+          扩展需要「读取你在所有网站上的数据」权限，因为划词和整页翻译必须注入页面（只针对 http/https 网页，本地文件不注入）。它不收集、不上传任何浏览数据；
           唯一的外发请求就是你配置的那个 AI 接口。
         </div>
       </div>

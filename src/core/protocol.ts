@@ -130,13 +130,15 @@ export function buildRequest(
     const cleanModel = model.replace(/^models\//, '');
     const method = stream ? 'streamGenerateContent' : 'generateContent';
 
-    const qs: string[] = [];
-    if (stream) qs.push('alt=sse');
-    if (key) qs.push('key=' + encodeURIComponent(key));
+    /* key 走请求头，不进 URL。
+       URL 会留在浏览器历史、扩展日志、代理访问记录里，还可能随 Referer 外泄；
+       Gemini 官方支持 x-goog-api-key，没有理由把它塞进查询串。 */
+    const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+    if (key) headers['x-goog-api-key'] = key;
 
     const url =
       `${root}/${version}/models/${encodeURIComponent(cleanModel)}:${method}` +
-      (qs.length ? `?${qs.join('&')}` : '');
+      (stream ? '?alt=sse' : '');
 
     const contents = messages
       .filter(m => m.role !== 'system')
@@ -158,7 +160,7 @@ export function buildRequest(
     if (maxTokens) (body.generationConfig as Record<string, unknown>).maxOutputTokens = maxTokens;
     if (systemText) body.systemInstruction = { parts: [{ text: systemText }] };
 
-    return { url, headers: { 'Content-Type': 'application/json' }, body };
+    return { url, headers, body };
   }
 
   /* openai 兼容 */
@@ -248,4 +250,19 @@ export function extractDelta(json: unknown): string {
 /** 构造请求时是否含图片 —— 供调用方决定要不要换多模态模型 */
 export function hasImageContent(messages: Message[]): boolean {
   return messages.some(m => Array.isArray(m.content));
+}
+
+/**
+ * 从任意文本里抹掉 API Key。
+ *
+ * 上游经常把 Key 回显在错误体里（"Incorrect API key provided: sk-…"），
+ * 而这段文本最终会显示在弹窗、页面的错误提示里。抛给用户之前先擦掉。
+ *
+ * 用 split/join 而不是正则，避免 Key 里的 . * + 等字符被当成元字符。
+ */
+export function redactSecrets(text: string, key: string): string {
+  const k = String(key || '').trim();
+  const s = String(text ?? '');
+  if (!k) return s;
+  return s.split(k).join('<已隐藏>');
 }

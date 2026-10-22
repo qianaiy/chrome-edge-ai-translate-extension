@@ -18,7 +18,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const args = process.argv.slice(2);
 const useEdge = args.includes('--edge');
 const extArg = args.indexOf('--ext');
-const extPath = extArg >= 0 ? resolve(root, args[extArg + 1]) : join(root, 'src', 'extension');
+/* 冒烟测的是「构建产物」，必须从 dist 加载 —— src/extension 里没有 core.js，
+   服务工作者会 importScripts 失败、整个后台起不来（症状是消息永远不返回）。 */
+const extPath = extArg >= 0 ? resolve(root, args[extArg + 1]) : join(root, 'dist');
 const port = useEdge ? 9223 : 9222;
 
 const BROWSERS = {
@@ -33,6 +35,7 @@ if (!existsSync(exe)) {
 }
 if (!existsSync(join(extPath, 'manifest.json'))) {
   console.error(`扩展目录不合法：${extPath}`);
+  if (extPath === join(root, 'dist')) console.error('先跑 npm run build 生成 dist/');
   process.exit(2);
 }
 
@@ -77,12 +80,29 @@ class CDP {
       }
     });
   }
-  send(method, params = {}, sessionId) {
+  /* 每条命令都设上限：CDP 不回包时宁可报错，也不要让 CI 挂十分钟。
+     之前就是这里没上限，一次「消息没人应答」把流水线拖到超时，看不出任何原因。 */
+  send(method, params = {}, sessionId, timeoutMs = 20000) {
     const id = ++this.id;
     const payload = { id, method, params };
     if (sessionId) payload.sessionId = sessionId;
     this.ws.send(JSON.stringify(payload));
-    return new Promise((res, rej) => this.pending.set(id, { resolve: res, reject: rej }));
+    return new Promise((res, rej) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        rej(new Error(`CDP 超时 ${timeoutMs}ms：${method}`));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: v => {
+          clearTimeout(timer);
+          res(v);
+        },
+        reject: e => {
+          clearTimeout(timer);
+          rej(e);
+        }
+      });
+    });
   }
   on(fn) {
     this.listeners.push(fn);
@@ -146,6 +166,20 @@ async function main() {
   await browser.send('Runtime.enable', {}, sessionId);
   await browser.send('Log.enable', {}, sessionId).catch(() => {});
   await sleep(500);
+  /* 把 service worker 的真实状态打出来：出问题时这几行能直接指出
+     「是没加载共享核心」「还是监听器没注册」。 */
+  /* 服务工作者状态：出故障时这几行能直接指出是「共享核心没加载」还是「监听器没注册」 */
+  const PROBE =
+    'location.pathname' +
+    ' + " / MXTCore:" + (typeof MXTCore)' +
+    ' + " / onMessage:" + (typeof (chrome && chrome.runtime && chrome.runtime.onMessage))';
+  const swState = await browser.send(
+    'Runtime.evaluate',
+    { expression: PROBE, returnByValue: true },
+    sessionId,
+    8000
+  );
+  console.log(`[${label}] service worker：${swState.result?.value}`);
 
   /* 消息必须从一个扩展页面发出去 —— service worker 给自己发消息，
      自己的 onMessage 监听器收不到（没有「接收端」）。
@@ -159,13 +193,28 @@ async function main() {
   const popupSession = popupAttach.sessionId;
   await browser.send('Runtime.enable', {}, popupSession);
   await sleep(800);
+  const popupState = await browser.send(
+    'Runtime.evaluate',
+    {
+      expression: 'document.readyState + " / runtime:" + (typeof chrome?.runtime)',
+      returnByValue: true
+    },
+    popupSession,
+    8000
+  );
+  console.log(`[${label}] popup 上下文：${popupState.result?.value}`);
 
   const evalIn = async expr => {
-    const r = await browser.send(
-      'Runtime.evaluate',
-      { expression: expr, awaitPromise: true, returnByValue: true },
-      popupSession
-    );
+    const r = await browser
+      .send(
+        'Runtime.evaluate',
+        { expression: expr, awaitPromise: true, returnByValue: true },
+        popupSession,
+        12000
+      )
+      .catch(e => {
+        throw new Error(`求值失败（${e.message}）：${expr.slice(0, 70)}`);
+      });
     if (r.exceptionDetails) {
       throw new Error(r.exceptionDetails.exception?.description || 'evaluate 抛错');
     }
@@ -226,7 +275,7 @@ async function main() {
      内容脚本跑在隔离世界（isolated world）里，页面主世界看不到 window.__MXT_ACTIVE__。
      但它注入的 #mxt-host 元素在页面 DOM 里，主世界能看到，所以用这个来验证。
 
-     注意：内容脚本的 matches 是 <all_urls>，data: URL 不在内，
+     注意：内容脚本的 matches 是 http/https，data: URL 不在内，
      所以必须起一个真的 http 服务来测。 */
   const { createServer } = await import('node:http');
   const server = createServer((_req, res) => {

@@ -6,6 +6,7 @@
  *   - protocol.ts  三种协议的请求体构造与响应解析
  *   - prompt.ts    翻译提示词与分段标记解析
  *   - subtitle.ts  WebVTT / SRT 解析与时间轴格式化
+ *   - endpoint.ts  翻译服务地址的信任边界（协议、明文、凭证、重定向）
  *
  * 设计约束：
  *   1. 不引用任何 chrome.* API —— 这样能在 Node 里直接跑单元测试。
@@ -29,6 +30,15 @@ export {
   isLocalEndpoint,
   type ConfigCheck
 } from './provider.js';
+
+export {
+  checkEndpoint,
+  isLocalHost,
+  sameOrigin,
+  redirectWarning,
+  type EndpointProblem,
+  type EndpointPolicy
+} from './endpoint.js';
 
 export {
   buildRequest,
@@ -82,10 +92,13 @@ export {
   toCss,
   estimateTextWidth,
   fitText,
+  findBubbleRegion,
+  eraseBubble,
   type Box,
   type RGBA,
   type PixelBuffer,
-  type FitResult
+  type FitResult,
+  type BubbleRegion
 } from './inpaint.js';
 
 export {

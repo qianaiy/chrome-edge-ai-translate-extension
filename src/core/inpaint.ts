@@ -389,3 +389,358 @@ export function eraseAll(buf: PixelBuffer, boxes: Box[], pad?: number): RGBA[] {
 
   return bgs;
 }
+
+/* ------------------------------------------------------------------ *
+ * 气泡区域识别
+ *
+ * 模型只给「文字区」一个矩形。直接按矩形擦、按矩形排版有两个问题：
+ *  - 矩形比气泡大时，会把气泡描边一起擦掉（画面缺一圈线）
+ *  - 矩形比气泡小时，排版的可用区域算小了，长译文被过早缩字号
+ *
+ * 这里用像素找气泡本体：从文字框出发，在扩散出来的窗口里找「与气泡底色
+ * 相近」的最大连通域，它的外接框就是气泡框，掩码就是可安全操作的区域。
+ * 找不到（比如字直接压在画面上、根本没有气泡）就老实退回矩形，不假装识别到了。
+ * ------------------------------------------------------------------ */
+
+export interface BubbleRegion {
+  /** 气泡外接框（像素） */
+  rect: { x1: number; y1: number; x2: number; y2: number };
+  /** 气泡内部掩码，1 = 属于气泡内部。长度 = 框宽 × 框高 */
+  mask: Uint8Array;
+  /** 掩码面积 / 外接框面积。椭圆气泡约 0.6-0.8，矩形接近 1 */
+  fillRatio: number;
+  /** 是否真的认出了气泡；false 时调用方应退回矩形处理 */
+  isBubble: boolean;
+  /** 排版安全区（像素）：按掩码逐行逐列收窄，比固定比例更贴合不规则气泡 */
+  safe: { x1: number; y1: number; x2: number; y2: number };
+  /** 气泡填充色 */
+  bg: RGBA;
+}
+
+function colorDist(a: RGBA, b: RGBA): number {
+  return Math.abs(a.r - b.r) + Math.abs(a.g - b.g) + Math.abs(a.b - b.b);
+}
+
+function rectFallback(
+  px: { x1: number; y1: number; x2: number; y2: number },
+  bg: RGBA
+): BubbleRegion {
+  const w = Math.max(0, px.x2 - px.x1);
+  const h = Math.max(0, px.y2 - px.y1);
+  const mask = new Uint8Array(w * h);
+  mask.fill(1);
+  return { rect: px, mask, fillRatio: 1, isBubble: false, safe: px, bg };
+}
+
+/** 从掩码里取「最宽的一整段」当安全区，太窄的边缘不要 */
+function safeFromMask(
+  mask: Uint8Array,
+  rw: number,
+  rh: number,
+  centreX: number,
+  centreY: number
+): { x1: number; y1: number; x2: number; y2: number } {
+  const rowSpan = (y: number) => {
+    let lo = -1;
+    let hi = -1;
+    for (let x = 0; x < rw; x++) {
+      if (mask[y * rw + x]) {
+        if (lo < 0) lo = x;
+        hi = x;
+      }
+    }
+    return { lo, hi };
+  };
+  const colSpan = (x: number) => {
+    let lo = -1;
+    let hi = -1;
+    for (let y = 0; y < rh; y++) {
+      if (mask[y * rw + x]) {
+        if (lo < 0) lo = y;
+        hi = y;
+      }
+    }
+    return { lo, hi };
+  };
+
+  let maxRow = 0;
+  for (let y = 0; y < rh; y++) {
+    const sp = rowSpan(y);
+    if (sp.lo >= 0) maxRow = Math.max(maxRow, sp.hi - sp.lo + 1);
+  }
+  let maxCol = 0;
+  for (let x = 0; x < rw; x++) {
+    const sp = colSpan(x);
+    if (sp.lo >= 0) maxCol = Math.max(maxCol, sp.hi - sp.lo + 1);
+  }
+
+  /* 以文字框中心所在的行/列为中心，向两侧扩展到「够宽」为止 */
+  const widen = (from: number, limit: number, ok: (i: number) => boolean) => {
+    let a = from;
+    let b = from;
+    while (a - 1 >= 0 && ok(a - 1)) a--;
+    while (b + 1 < limit && ok(b + 1)) b++;
+    return { a, b };
+  };
+  const rowOk = (y: number) => {
+    const sp = rowSpan(y);
+    return sp.lo >= 0 && sp.hi - sp.lo + 1 >= maxRow * 0.62;
+  };
+  const colOk = (x: number) => {
+    const sp = colSpan(x);
+    return sp.lo >= 0 && sp.hi - sp.lo + 1 >= maxCol * 0.62;
+  };
+  const ry = widen(Math.min(rh - 1, Math.max(0, centreY)), rh, rowOk);
+  const cx = widen(Math.min(rw - 1, Math.max(0, centreX)), rw, colOk);
+
+  const inset = Math.max(1, Math.round(Math.min(rw, rh) * 0.03));
+  const x1 = Math.min(rw, Math.max(0, cx.a + inset));
+  const x2 = Math.max(0, Math.min(rw, cx.b + 1 - inset));
+  const y1 = Math.min(rh, Math.max(0, ry.a + inset));
+  const y2 = Math.max(0, Math.min(rh, ry.b + 1 - inset));
+  if (x2 <= x1 || y2 <= y1) return { x1: 0, y1: 0, x2: rw, y2: rh };
+  return { x1, y1, x2, y2 };
+}
+
+/** 框内像素的中位色：比平均值抗文字笔画干扰，比取样点更稳。 */
+function medianColorIn(buf: PixelBuffer, x1: number, y1: number, x2: number, y2: number): RGBA {
+  const rs: number[] = [];
+  const gs: number[] = [];
+  const bs: number[] = [];
+  const as: number[] = [];
+  const step = Math.max(1, Math.round(Math.min(x2 - x1, y2 - y1) / 24));
+  for (let y = y1; y < y2; y += step) {
+    for (let x = x1; x < x2; x += step) {
+      const c = getPixel(buf, x, y);
+      if (c.a <= 8) continue;
+      rs.push(c.r);
+      gs.push(c.g);
+      bs.push(c.b);
+      as.push(c.a);
+    }
+  }
+  if (!rs.length) return { r: 255, g: 255, b: 255, a: 255 };
+  const mid = (v: number[]) => {
+    v.sort((a, b) => a - b);
+    return v[Math.floor(v.length / 2)];
+  };
+  return { r: mid(rs), g: mid(gs), b: mid(bs), a: mid(as) };
+}
+
+export function findBubbleRegion(
+  buf: PixelBuffer,
+  box: Box,
+  opts: { tolerance?: number; minFill?: number } = {}
+): BubbleRegion {
+  const tolerance = opts.tolerance ?? 42;
+  const minFill = opts.minFill ?? 0.42;
+
+  const px = boxToPixels(box, buf.width, buf.height, 0);
+  const boxW = px.x2 - px.x1;
+  const boxH = px.y2 - px.y1;
+  if (boxW < 6 || boxH < 6) return rectFallback(px, { r: 255, g: 255, b: 255, a: 255 });
+
+  /* 气泡底色要取「框里面」的主流色，而不是框外面那一圈 ——
+     框外是页面底色，照它去判定可通行区域，气泡内部反而被判成不可通行，
+     整页底色反倒成了候选连通域，最后一定认不出气泡。 */
+  const bg = medianColorIn(buf, px.x1, px.y1, px.x2, px.y2);
+
+  /* 搜索窗口放 0.75 个框宽高：气泡一般只比文字大一圈，
+     放太宽会把相邻气泡或页面白底吃进来。 */
+  const win = {
+    x1: Math.max(0, px.x1 - Math.round(boxW * 0.75)),
+    y1: Math.max(0, px.y1 - Math.round(boxH * 0.75)),
+    x2: Math.min(buf.width, px.x2 + Math.round(boxW * 0.75)),
+    y2: Math.min(buf.height, px.y2 + Math.round(boxH * 0.75))
+  };
+  const ww = win.x2 - win.x1;
+  const wh = win.y2 - win.y1;
+  if (ww <= 0 || wh <= 0) return rectFallback(px, bg);
+
+  const passable = new Uint8Array(ww * wh);
+  for (let y = 0; y < wh; y++) {
+    for (let x = 0; x < ww; x++) {
+      const c = getPixel(buf, win.x1 + x, win.y1 + y);
+      if (c.a > 8 && colorDist(c, bg) <= tolerance) passable[y * ww + x] = 1;
+    }
+  }
+
+  /* 连通域：挑「和文字框重叠最多」的那一块 —— 气泡内部就是它 */
+  const label = new Int32Array(ww * wh);
+  const stack = new Int32Array(ww * wh);
+  const cands: { id: number; area: number; x1: number; y1: number; x2: number; y2: number; overlap: number }[] =
+    [];
+  let nextId = 0;
+
+  for (let start = 0; start < passable.length; start++) {
+    if (!passable[start] || label[start]) continue;
+    const id = ++nextId;
+    let sp = 0;
+    stack[sp++] = start;
+    label[start] = id;
+    let area = 0;
+    let bx1 = ww;
+    let by1 = wh;
+    let bx2 = -1;
+    let by2 = -1;
+    let overlap = 0;
+    while (sp) {
+      const idx = stack[--sp];
+      const x = idx % ww;
+      const y = (idx - x) / ww;
+      area++;
+      if (x < bx1) bx1 = x;
+      if (x > bx2) bx2 = x;
+      if (y < by1) by1 = y;
+      if (y > by2) by2 = y;
+      const gx = win.x1 + x;
+      const gy = win.y1 + y;
+      if (gx >= px.x1 && gx < px.x2 && gy >= px.y1 && gy < px.y2) overlap++;
+
+      if (x > 0 && passable[idx - 1] && !label[idx - 1]) {
+        label[idx - 1] = id;
+        stack[sp++] = idx - 1;
+      }
+      if (x + 1 < ww && passable[idx + 1] && !label[idx + 1]) {
+        label[idx + 1] = id;
+        stack[sp++] = idx + 1;
+      }
+      if (y > 0 && passable[idx - ww] && !label[idx - ww]) {
+        label[idx - ww] = id;
+        stack[sp++] = idx - ww;
+      }
+      if (y + 1 < wh && passable[idx + ww] && !label[idx + ww]) {
+        label[idx + ww] = id;
+        stack[sp++] = idx + ww;
+      }
+    }
+    /* 只有和文字框真的有交集的连通域才算「候选气泡内部」 */
+    if (overlap > 0) cands.push({ id, area, x1: bx1, y1: by1, x2: bx2, y2: by2, overlap });
+  }
+
+  if (!cands.length) return rectFallback(px, bg);
+
+  /* 字、拟声字、速度线会把气泡内部分成好几块。只取最大那块，判定会失败（框不住文字），
+     擦的时候也只擦一块，原文会留半截。所以把所有和文字框有交集的连通域并起来。 */
+  let ux1 = ww;
+  let uy1 = wh;
+  let ux2 = -1;
+  let uy2 = -1;
+  let uArea = 0;
+  for (const c of cands) {
+    if (c.x1 < ux1) ux1 = c.x1;
+    if (c.y1 < uy1) uy1 = c.y1;
+    if (c.x2 > ux2) ux2 = c.x2;
+    if (c.y2 > uy2) uy2 = c.y2;
+    uArea += c.area;
+  }
+  const bw = ux2 - ux1 + 1;
+  const bh = uy2 - uy1 + 1;
+  /* 被切开的气泡 fillRatio 天然偏低（中间隔着黑条），所以按「并起来之后的占比」算，
+     量纲仍然是「候选区域的像素有多稠密」。 */
+  const fillRatio = uArea / (bw * bh);
+  /* 气泡内部天然比模型给的框小一圈（描边、圆角），窄框上 5% 的阈值会直接判死；
+     也不能大得离谱 —— 那多半是把整片白底当成了气泡。 */
+  const encloses =
+    bw >= boxW * 0.75 && bh >= boxH * 0.75 && bw <= boxW * 2.6 && bh <= boxH * 2.6;
+  const notWholePage = bw <= buf.width * 0.97 && bh <= buf.height * 0.97;
+  /* 连通域把整个搜索窗口撑满，说明窗口里没有闭合边界（字直接压在画面/底色上），
+     那它就不是气泡。少了这一条，一整片浅色画面会被当成一个巨大气泡。 */
+  const touchesEdge = ux1 === 0 || uy1 === 0 || ux2 === ww - 1 || uy2 === wh - 1;
+  const isBubble =
+    encloses && notWholePage && !touchesEdge && fillRatio >= minFill && fillRatio <= 0.995;
+
+  const rect = {
+    x1: win.x1 + ux1,
+    y1: win.y1 + uy1,
+    x2: win.x1 + ux2 + 1,
+    y2: win.y1 + uy2 + 1
+  };
+  const rw = rect.x2 - rect.x1;
+  const rh = rect.y2 - rect.y1;
+
+  if (!isBubble) return { ...rectFallback(rect, bg), fillRatio, isBubble: false };
+
+  const ids = new Set(cands.map(c => c.id));
+  const comp = new Uint8Array(rw * rh);
+  for (let y = 0; y < rh; y++) {
+    for (let x = 0; x < rw; x++) {
+      if (ids.has(label[(uy1 + y) * ww + (ux1 + x)])) comp[y * rw + x] = 1;
+    }
+  }
+
+  /* 文字笔画本身不是「气泡底色」，会把掩码戳出一堆洞。
+     逐行、逐列各自补一次（正交凸包），洞就被填上，形状仍然是气泡的。 */
+  const rowFill = new Uint8Array(rw * rh);
+  for (let y = 0; y < rh; y++) {
+    let lo = -1;
+    let hi = -1;
+    for (let x = 0; x < rw; x++) {
+      if (comp[y * rw + x]) {
+        if (lo < 0) lo = x;
+        hi = x;
+      }
+    }
+    if (lo >= 0) for (let x = lo; x <= hi; x++) rowFill[y * rw + x] = 1;
+  }
+  const colFill = new Uint8Array(rw * rh);
+  for (let x = 0; x < rw; x++) {
+    let lo = -1;
+    let hi = -1;
+    for (let y = 0; y < rh; y++) {
+      if (comp[y * rw + x]) {
+        if (lo < 0) lo = y;
+        hi = y;
+      }
+    }
+    if (lo >= 0) for (let y = lo; y <= hi; y++) colFill[y * rw + x] = 1;
+  }
+  const mask = new Uint8Array(rw * rh);
+  for (let i = 0; i < mask.length; i++) mask[i] = rowFill[i] && colFill[i] ? 1 : 0;
+
+  const rel = safeFromMask(
+    mask,
+    rw,
+    rh,
+    Math.round((px.x1 + px.x2) / 2) - rect.x1,
+    Math.round((px.y1 + px.y2) / 2) - rect.y1
+  );
+  /* 对外一律给「整张图坐标系」的绝对像素，和 rectFallback 保持一致，
+     免得调用方一半用相对、一半用绝对。 */
+  const safe = { x1: rect.x1 + rel.x1, y1: rect.y1 + rel.y1, x2: rect.x1 + rel.x2, y2: rect.y1 + rel.y2 };
+
+  return { rect, mask, fillRatio, isBubble: true, safe, bg };
+}
+
+/**
+ * 按气泡掩码擦字：只动气泡内部，描边和外部画面一个像素都不碰。
+ * 权重和 eraseBox 一致（按与底色的差距），靠近掩码边界的地方减半，避免硬边。
+ */
+export function eraseBubble(buf: PixelBuffer, region: BubbleRegion, strength = 1): void {
+  const { rect, mask, bg } = region;
+  const rw = rect.x2 - rect.x1;
+  const rh = rect.y2 - rect.y1;
+  if (rw <= 0 || rh <= 0) return;
+
+  const inside = (x: number, y: number) =>
+    x >= 0 && y >= 0 && x < rw && y < rh && mask[y * rw + x] === 1;
+
+  for (let y = 0; y < rh; y++) {
+    for (let x = 0; x < rw; x++) {
+      if (!inside(x, y)) continue;
+      const gx = rect.x1 + x;
+      const gy = rect.y1 + y;
+      const c = getPixel(buf, gx, gy);
+      const diff = colorDist(c, bg) / 255;
+      if (diff < 0.015) continue;
+      const edge = inside(x - 1, y) && inside(x + 1, y) && inside(x, y - 1) && inside(x, y + 1) ? 1 : 0.55;
+      const k = Math.min(1, Math.pow(diff, 0.45) * strength) * edge;
+      setPixel(buf, gx, gy, {
+        r: c.r + (bg.r - c.r) * k,
+        g: c.g + (bg.g - c.g) * k,
+        b: c.b + (bg.b - c.b) * k,
+        a: c.a
+      });
+    }
+  }
+}

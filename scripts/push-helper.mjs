@@ -19,19 +19,87 @@ import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { request as httpsRequest } from 'node:https';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const REPO = 'qianaiy/chrome-edge-ai-translate-extension';
 const API = `https://api.github.com/repos/${REPO}`;
 
 /**
- * github.com 可用的 IP —— 这个网络环境里 DNS 给出的地址连不上 443，
- * 但 api.github.com 正常。可以用 MXT_GITHUB_IP 覆盖。
- * 注意：这条链路时好时坏，而且可用的 IP 会变（DNS 轮询 + 运营商路由），
- * 所以下面有重试。换 IP 时先测：
- *   curl -s -o NUL -w "%{http_code}" --resolve "github.com:443:<IP>" https://github.com
+ * github.com 的可用 IP —— 这个网络环境里 DNS 给出的地址连不上 443，
+ * 但 api.github.com 正常。可以用 MXT_GITHUB_IP 强制指定。
+ *
+ * 以前这里是**一个写死的 IP**，结果那个 IP 死掉之后推送就整个不能用了，
+ * 而报错信息只说「连不上 443」，看不出是 IP 过期而不是网络断了。
+ * 现在每次先探测一轮，挑第一个真的能完成 TLS 握手的。
+ *
+ * 注意：TCP 通不代表能用 —— 中间可能只放行特定 SNI/线路。
+ * 所以探测要带 servername 做真实 TLS，光测端口会选到假可用的 IP。
  */
-const RESOLVED_IP = process.env.MXT_GITHUB_IP || '140.82.112.3';
+const IP_CANDIDATES = [
+  '140.82.113.3',
+  '140.82.114.3',
+  '140.82.116.3',
+  '20.205.243.166',
+  '20.27.177.113',
+  '20.200.245.247',
+  '140.82.112.3',
+  '140.82.121.3'
+];
+
+/**
+ * 探一个 IP 能不能真的和 github.com 握手。
+ * 只测 TCP 端口不够：中间设备可能只放行特定线路，端口通但 TLS 被掐，
+ * 选到那种 IP 会得到一个和「IP 已经死了」一模一样的报错。
+ */
+function probeIp(ip, timeoutMs = 6000) {
+  return new Promise(done => {
+    let settled = false;
+    const finish = ok => {
+      if (settled) return;
+      settled = true;
+      done(ok);
+    };
+    const req = httpsRequest(
+      {
+        host: ip,
+        port: 443,
+        servername: 'github.com',
+        path: '/',
+        method: 'HEAD',
+        timeout: timeoutMs,
+        headers: { Host: 'github.com', 'User-Agent': 'dsh-push-helper' },
+        /* 探测只关心「能不能通」，不关心证书链 */
+        rejectUnauthorized: false
+      },
+      res => {
+        res.resume();
+        finish(true);
+      }
+    );
+    req.on('timeout', () => {
+      req.destroy();
+      finish(false);
+    });
+    req.on('error', () => finish(false));
+    req.end();
+  });
+}
+
+async function pickReachableIp() {
+  const forced = String(process.env.MXT_GITHUB_IP || '').trim();
+  if (forced) {
+    const ok = await probeIp(forced);
+    console.log(ok ? `  指定 IP ${forced} 可用` : `  ! 指定 IP ${forced} 探测不通，仍按它尝试`);
+    return forced;
+  }
+  for (const ip of IP_CANDIDATES) {
+    const ok = await probeIp(ip);
+    console.log(`  探测 ${ip} … ${ok ? '通' : '不通'}`);
+    if (ok) return ip;
+  }
+  return null;
+}
 
 const token = process.argv[2];
 const branch = process.argv[3] || 'feature/p0-baseline';
@@ -136,7 +204,10 @@ async function main() {
     console.log(`  ! 探针分支未能清理，请手动删除 ${PROBE_BRANCH}`);
   }
 
-  /* ---- 3. 推送（这条链路时好时坏，重试几次） ---- */
+  /* ---- 3. 推送（这条链路时好时坏，先挑一个真能连上的 IP，再重试几次） ---- */
+  console.log('寻找可用的 github.com 地址 …');
+  const resolvedIp = await pickReachableIp();
+
   const dir = mkdtempSync(join(tmpdir(), 'mxt-askpass-'));
   const askpass = join(dir, 'askpass.cmd');
   writeFileSync(askpass, `@echo off\r\necho ${token}\r\n`, 'utf8');
@@ -145,13 +216,18 @@ async function main() {
     ...process.env,
     GIT_ASKPASS: askpass,
     GIT_TERMINAL_PROMPT: '0',
-    GCM_INTERACTIVE: 'Never',
-    /* 用环境变量传 -c 参数：在 Windows 上 shell:true 会把 "key=value" 里的
-       等号和引号搅乱，导致这个覆盖没生效、git 又连回那个坏 IP。 */
-    GIT_CONFIG_COUNT: '1',
-    GIT_CONFIG_KEY_0: 'http.curloptResolve',
-    GIT_CONFIG_VALUE_0: `github.com:443:${RESOLVED_IP}`
+    GCM_INTERACTIVE: 'Never'
   };
+  /* 用环境变量传 -c 参数：在 Windows 上 shell:true 会把 "key=value" 里的
+     等号和引号搅乱，导致这个覆盖没生效、git 又连回那个坏 IP。 */
+  if (resolvedIp) {
+    env.GIT_CONFIG_COUNT = '1';
+    env.GIT_CONFIG_KEY_0 = 'http.curloptResolve';
+    env.GIT_CONFIG_VALUE_0 = `github.com:443:${resolvedIp}`;
+    console.log(`  使用 ${resolvedIp}`);
+  } else {
+    console.log('  ! 没有探测到可用地址，先按系统 DNS 尝试');
+  }
 
   const ATTEMPTS = 4;
   let push = { status: 1 };

@@ -252,8 +252,10 @@ CI 也会跑这一步。仓库已忽略 `.env` / `.env.*`（`.env.example` 除�
    用户主动点击（划词气泡、快捷键、弹窗按钮），不做后台自动抓取。
 6. **发布前检查权限和隐私要求。** 当前权限：
    `storage` / `contextMenus` / `activeTab` / `scripting` / `webNavigation`，
-   `host_permissions: <all_urls>`（整页翻译需要）。发布到商店前需要复核
-   `<all_urls>` 的用途说明，并补充隐私政策（用户数据只在本机，不上传）。
+   `host_permissions: http://*/* + https://*/*`（整页翻译需要，只覆盖网页；
+   `file://`、`ftp://` 等本来就没有被注入过，收窄后不再声明）。
+   发布到商店前仍需复核权限用途说明，并补充隐私政策（用户数据只在本机，不上传）。
+   下一步计划是把自动翻译相关的权限改为可选权限，按需申请（见 `docs/ROADMAP.md`）。
 
 ---
 

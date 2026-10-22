@@ -49,10 +49,13 @@ describe('批量翻译的索引空间', () => {
     expect(parsed[1]).toBeNull();
   });
 
-  it('模型给重复的编号时，后一个覆盖前一个', () => {
+  it('★ 模型给重复的编号时判为歧义（null），不让后一个覆盖前一个', () => {
+    /* 曾经的语义是「后一个覆盖前一个」：『第一个』静默消失，位置又不是 null，
+       于是不触发重试，用户拿到一段错位的译文还查不出原因。 */
     const list = ['A', 'B'];
     const reply = '<<<1>>>第一个\n<<<1>>>第二个';
     const parsed = parseMarked(reply, list.length);
-    expect(parsed[0]).toBe('第二个');
+    expect(parsed[0]).toBeNull();
+    expect(parsed[1]).toBeNull();
   });
 });

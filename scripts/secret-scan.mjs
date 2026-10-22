@@ -12,12 +12,12 @@
 
 import { readFile, readdir, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.acl-recovery', '.vite']);
+const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'coverage', '.acl-recovery', '.vite', '_bili-handoff']);
 const SKIP_FILES = new Set(['package-lock.json']);
 
 const NUL = String.fromCharCode(0);
@@ -65,16 +65,48 @@ async function* walk(dir) {
   }
 }
 
+/**
+ * 「可能被提交的文件」= 已跟踪 + 未跟踪但没被 .gitignore 排除的。
+ * 这才是「会不会进仓库」的真实集合。被忽略的本地文件（会话转写、构建产物）
+ * 本来就不可能提交；把它们算进来只会让扫描频繁误报，最后逼人加白名单放水。
+ */
+async function gitVisibleFiles() {
+  try {
+    const { execFile } = await import('node:child_process');
+    const { promisify } = await import('node:util');
+    const { stdout } = await promisify(execFile)(
+      'git',
+      ['ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+      { cwd: root, maxBuffer: 64 * 1024 * 1024 }
+    );
+    return stdout.split(NUL).filter(Boolean).map(p => join(root, p));
+  } catch {
+    return null;
+  }
+}
+
+async function collect(dir) {
+  const out = [];
+  for await (const f of walk(dir)) out.push(f);
+  return out;
+}
+
 async function main() {
   const targets = process.argv.slice(2);
   const dirs = targets.length ? targets.map(t => resolve(root, t)) : [root];
+
+  /* 显式指定目录时按目录全量扫；默认只扫 git 看得见的文件 */
+  const gitFiles = targets.length ? null : await gitVisibleFiles();
 
   const findings = [];
   let scanned = 0;
 
   for (const dir of dirs) {
     if (!existsSync(dir)) continue;
-    for await (const file of walk(dir)) {
+    const files = gitFiles
+      ? gitFiles.filter(f => f === dir || f.startsWith(dir.endsWith(sep) ? dir : dir + sep))
+      : await collect(dir);
+    for (const file of files) {
       const rel = relative(root, file);
 
       /* 私钥文件单独查 */
