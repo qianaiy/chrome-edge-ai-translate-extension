@@ -1583,7 +1583,7 @@ function parseAsrJson(raw) {
 
 /* 让多模态模型看一张图，吐出里面的文字和译文。
    返回 { items: [{ text, zh, box? }] }，box 是相对图片的百分比位置。 */
-async function translateImage(imageBase64, mediaType, settings, targetLang) {
+async function translateImage(imageBase64, mediaType, settings, targetLang, size) {
   const model = String(settings.visionModel || settings.model || '').trim();
   if (!model) throw new Error('还没选模型');
   const useModel = { ...settings, model };
@@ -1611,7 +1611,23 @@ async function translateImage(imageBase64, mediaType, settings, targetLang) {
     try {
       const text = await callOnce(protocol, useModel, messages, { timeoutMs: 180000 });
       const parsed = parseImageJson(text);
-      if (parsed) return { items: parsed, protocol };
+      if (parsed) {
+        /* 模型给的框坐标系并不可信：实测同一个模型在同一批请求里，
+           有的图返回 0-100 百分比，有的返回像素坐标。过去一律当百分比用，
+           像素框就被画到 210% 的位置，译文直接跑出画面。
+           所以在核心库里统一判坐标系、换算、钳制、去重之后再回给内容脚本。 */
+        const w = Number(size && size.width) || 0;
+        const h = Number(size && size.height) || 0;
+        const clean = MXT_CORE.sanitizeVisionItems(parsed, w, h);
+        const merged = MXT_CORE.mergeDuplicateBoxes(clean.items);
+        return {
+          items: merged.items,
+          protocol,
+          boxSystem: clean.system,
+          droppedBox: clean.droppedBox,
+          merged: merged.merged
+        };
+      }
       errors.push(`${PROTOCOL_LABEL[protocol]}：返回的不是 JSON`);
     } catch (e) {
       errors.push(`${PROTOCOL_LABEL[protocol]}：${e?.message || e}`);
@@ -1833,9 +1849,17 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
             String(msg.image || ''),
             String(msg.mediaType || 'image/jpeg'),
             settings,
-            settings.targetLang || '简体中文'
+            settings.targetLang || '简体中文',
+            { width: msg.width, height: msg.height }
           );
-          return sendResponse({ ok: true, items: r.items, protocol: r.protocol });
+          return sendResponse({
+            ok: true,
+            items: r.items,
+            protocol: r.protocol,
+            boxSystem: r.boxSystem,
+            droppedBox: r.droppedBox,
+            merged: r.merged
+          });
         } catch (e) {
           return sendResponse({ ok: false, error: e?.message || String(e) });
         }

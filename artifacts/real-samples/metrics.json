@@ -1,0 +1,415 @@
+{
+  "model": "raccoon/sn-sensenova-6-8-flash-lite",
+  "endpoint": "http://127.0.0.1:8326/v1/chat/completions",
+  "startedAt": "2026-10-23T20:38:40.038Z",
+  "threshold": {
+    "cover": 0.6,
+    "spillTolerance": 2
+  },
+  "samples": [
+    {
+      "name": "jp-vertical",
+      "size": [
+        800,
+        1200
+      ],
+      "ms": 5022,
+      "finish": "stop",
+      "reasoningTokens": 443,
+      "boxSystem": "thousandth",
+      "counts": {
+        "gt": 5,
+        "model": 5,
+        "raw": 5,
+        "matched": 4,
+        "spilled": 2,
+        "mismatched": 0,
+        "extra": 1,
+        "mergedIn": 0,
+        "droppedBox": 0
+      },
+      "meanIou": 0.215,
+      "rows": [
+        {
+          "id": "jp-v1",
+          "textOver": false,
+          "fit": null,
+          "kind": "narration",
+          "matched": false,
+          "cover": 0.37,
+          "iou": 0,
+          "textSim": 0,
+          "spill": false,
+          "areaRatio": null,
+          "gtText": "学校の屋上にて 放課後のことだった。",
+          "modelText": "",
+          "modelBox": null,
+          "gtBox": [
+            5.5,
+            3.3,
+            38,
+            8.3
+          ]
+        },
+        {
+          "id": "jp-v2",
+          "textOver": false,
+          "fit": {
+            "fontSize": 31,
+            "lines": 1
+          },
+          "kind": "bubble-vertical",
+          "matched": true,
+          "cover": 1,
+          "iou": 0.12,
+          "textSim": 1,
+          "spill": false,
+          "areaRatio": 0.68,
+          "gtText": "もう帰ろうか",
+          "modelText": "もう帰ろうか",
+          "modelBox": [
+            63.5,
+            10.2,
+            87,
+            31
+          ],
+          "gtBox": [
+            75,
+            13.3,
+            78.8,
+            28.3
+          ]
+        },
+        {
+          "id": "jp-v3",
+          "textOver": false,
+          "fit": {
+            "fontSize": 25,
+            "lines": 2
+          },
+          "kind": "bubble-vertical-2col",
+          "matched": true,
+          "cover": 1,
+          "iou": 0.14,
+          "textSim": 1,
+          "spill": true,
+          "areaRatio": 1.03,
+          "gtText": "でも、まだ言えてないことがある",
+          "modelText": "でも、まだ言え/ていないことがあ/る",
+          "modelBox": [
+            20.2,
+            38.5,
+            57.5,
+            65.2
+          ],
+          "gtBox": [
+            39.6,
+            43.8,
+            47.9,
+            61.1
+          ]
+        },
+        {
+          "id": "jp-v4",
+          "textOver": false,
+          "fit": {
+            "fontSize": 34,
+            "lines": 1
+          },
+          "kind": "bubble-on-dark",
+          "matched": true,
+          "cover": 1,
+          "iou": 0.04,
+          "textSim": 0.83,
+          "spill": true,
+          "areaRatio": 1.32,
+          "gtText": "ここで待ってる",
+          "modelText": "「…」で待って/る",
+          "modelBox": [
+            9.2,
+            72.2,
+            51.7,
+            97
+          ],
+          "gtBox": [
+            31.5,
+            75.8,
+            34.5,
+            89.8
+          ]
+        },
+        {
+          "id": "jp-v5",
+          "textOver": false,
+          "fit": {
+            "fontSize": 34,
+            "lines": 1
+          },
+          "kind": "sfx",
+          "matched": true,
+          "cover": 0.94,
+          "iou": 0.56,
+          "textSim": 1,
+          "spill": false,
+          "areaRatio": null,
+          "gtText": "ザワ…",
+          "modelText": "ザワ…",
+          "modelBox": [
+            63.7,
+            73.7,
+            84.7,
+            80.2
+          ],
+          "gtBox": [
+            62.5,
+            75.1,
+            82.8,
+            79.3
+          ]
+        }
+      ]
+    },
+    {
+      "name": "jp-burst",
+      "size": [
+        800,
+        1000
+      ],
+      "ms": 5810,
+      "finish": "stop",
+      "reasoningTokens": 676,
+      "boxSystem": "percent",
+      "counts": {
+        "gt": 3,
+        "model": 3,
+        "raw": 3,
+        "matched": 3,
+        "spilled": 0,
+        "mismatched": 0,
+        "extra": 0,
+        "mergedIn": 0,
+        "droppedBox": 0
+      },
+      "meanIou": 0.503,
+      "rows": [
+        {
+          "id": "jp-b1",
+          "textOver": false,
+          "fit": {
+            "fontSize": 34,
+            "lines": 1
+          },
+          "kind": "bubble-burst",
+          "matched": true,
+          "cover": 0.99,
+          "iou": 0.38,
+          "textSim": 0.75,
+          "spill": false,
+          "areaRatio": 0.08,
+          "gtText": "うわああっ！",
+          "modelText": "うわぁっ！",
+          "modelBox": [
+            25,
+            28,
+            55,
+            35
+          ],
+          "gtBox": [
+            24.8,
+            30.8,
+            50.3,
+            34
+          ]
+        },
+        {
+          "id": "jp-b2",
+          "textOver": false,
+          "fit": {
+            "fontSize": 18,
+            "lines": 2
+          },
+          "kind": "bubble-rounded",
+          "matched": true,
+          "cover": 1,
+          "iou": 0.57,
+          "textSim": 1,
+          "spill": false,
+          "areaRatio": 0.49,
+          "gtText": "本当に行くの？ 危ないよ。",
+          "modelText": "本当に行くの？危ないよ。",
+          "modelBox": [
+            60,
+            53,
+            85,
+            62
+          ],
+          "gtBox": [
+            60.5,
+            54.9,
+            81.5,
+            61
+          ]
+        },
+        {
+          "id": "jp-b3",
+          "textOver": false,
+          "fit": {
+            "fontSize": 34,
+            "lines": 1
+          },
+          "kind": "bubble-small",
+          "matched": true,
+          "cover": 1,
+          "iou": 0.56,
+          "textSim": 1,
+          "spill": false,
+          "areaRatio": 0.24,
+          "gtText": "行く。",
+          "modelText": "行く。",
+          "modelBox": [
+            15,
+            75,
+            35,
+            80
+          ],
+          "gtBox": [
+            19.4,
+            76,
+            34.4,
+            79.7
+          ]
+        }
+      ]
+    },
+    {
+      "name": "kr-strip",
+      "size": [
+        900,
+        1600
+      ],
+      "ms": 7148,
+      "finish": "stop",
+      "reasoningTokens": 809,
+      "boxSystem": "thousandth",
+      "counts": {
+        "gt": 3,
+        "model": 3,
+        "raw": 3,
+        "matched": 3,
+        "spilled": 0,
+        "mismatched": 0,
+        "extra": 0,
+        "mergedIn": 0,
+        "droppedBox": 0
+      },
+      "meanIou": 0.483,
+      "rows": [
+        {
+          "id": "kr-1",
+          "textOver": false,
+          "fit": {
+            "fontSize": 34,
+            "lines": 1
+          },
+          "kind": "bubble-rounded-wide",
+          "matched": true,
+          "cover": 1,
+          "iou": 0.26,
+          "textSim": 1,
+          "spill": false,
+          "areaRatio": 0.61,
+          "gtText": "이게 진짜라고? 말도 안 돼.",
+          "modelText": "이게 진짜라고?/말도 안 돼.",
+          "modelBox": [
+            11.3,
+            9,
+            81.6,
+            14.4
+          ],
+          "gtBox": [
+            13.3,
+            9.4,
+            34.6,
+            14.1
+          ]
+        },
+        {
+          "id": "kr-2",
+          "textOver": false,
+          "fit": {
+            "fontSize": 20,
+            "lines": 2
+          },
+          "kind": "bubble-irregular",
+          "matched": true,
+          "cover": 0.89,
+          "iou": 0.62,
+          "textSim": 1,
+          "spill": false,
+          "areaRatio": 0.14,
+          "gtText": "그럼 지금 가자. 시간 없어.",
+          "modelText": "그럼 지금 가자./시간 없어.",
+          "modelBox": [
+            21.8,
+            39.7,
+            44.7,
+            44.9
+          ],
+          "gtBox": [
+            22.2,
+            39.2,
+            42.2,
+            43.7
+          ]
+        },
+        {
+          "id": "kr-3",
+          "textOver": false,
+          "fit": {
+            "fontSize": 10,
+            "lines": 2
+          },
+          "kind": "bubble-long-text",
+          "matched": true,
+          "cover": 0.95,
+          "iou": 0.57,
+          "textSim": 1,
+          "spill": false,
+          "areaRatio": 0.35,
+          "gtText": "내가 이 일을 시작한 건 그날 밤 때문이었어. ",
+          "modelText": "내가 이 일을 시작한 건/그날 밤 때문이었어./",
+          "modelBox": [
+            16.6,
+            68,
+            52.2,
+            79.2
+          ],
+          "gtBox": [
+            15.3,
+            68,
+            42.9,
+            76.9
+          ]
+        }
+      ]
+    }
+  ],
+  "totals": {
+    "gt": 11,
+    "model": 11,
+    "raw": 11,
+    "matched": 10,
+    "spilled": 2,
+    "mismatched": 0,
+    "textOver": 0,
+    "oversized": 3,
+    "extra": 1,
+    "mergedIn": 0,
+    "droppedBox": 0,
+    "placeRate": 0.909,
+    "spillRate": 0.2,
+    "mismatchRate": 0,
+    "textOverRate": 0,
+    "extraRate": 0.091
+  }
+}

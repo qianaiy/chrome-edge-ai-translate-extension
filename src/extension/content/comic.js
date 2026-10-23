@@ -29,7 +29,10 @@
     busy: false,
     mode: 'inpaint', // 'inpaint' = 擦字重绘 | 'overlay' = 浮层覆盖
     debug: false, // 调试模式：框位、字号、行数、溢出都直接标在图上
-    layouts: [] // 每张图最近一次的排版结果，给 debug 面板读
+    layouts: [], // 每张图最近一次的排版结果，给 debug 面板读
+    currentImg: null, // 当前这张图，导出和人工修正都要用它
+    items: [], // 当前这张图的识别结果（用户改过字之后就是改过的版本）
+    selectedItem: -1 // 当前选中的是第几条，-1 表示没选
   };
 
   /* ---------------- 找漫画图 ---------------- */
@@ -139,11 +142,27 @@
     modeBtn.className = 'mxt-comic-mode';
     modeBtn.textContent = '擦字版';
     modeBtn.title = '切换：擦字重绘 / 浮层覆盖';
+    const fontDown = document.createElement('button');
+    fontDown.className = 'mxt-comic-font-down';
+    fontDown.textContent = 'A-';
+    fontDown.title = '选中一条译文后，字号调小';
+    const fontUp = document.createElement('button');
+    fontUp.className = 'mxt-comic-font-up';
+    fontUp.textContent = 'A+';
+    fontUp.title = '选中一条译文后，字号调大';
+    const autoFitBtn = document.createElement('button');
+    autoFitBtn.className = 'mxt-comic-autofit';
+    autoFitBtn.textContent = '自动适配';
+    autoFitBtn.title = '按当前框的大小重新排版选中的那条（会覆盖手动调的字号）';
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'mxt-comic-export';
+    exportBtn.textContent = '导出';
+    exportBtn.title = '把当前这张图连同译文存成 PNG';
     const debugBtn = document.createElement('button');
     debugBtn.className = 'mxt-comic-debug-btn';
     debugBtn.textContent = '调试';
     debugBtn.title = '显示图片尺寸、每个气泡的框位、字号、行数与溢出情况';
-    bar.append(prog, modeBtn, debugBtn, again, allBtn);
+    bar.append(prog, modeBtn, fontDown, fontUp, autoFitBtn, debugBtn, again, allBtn, exportBtn);
 
     const body = document.createElement('div');
     body.className = 'mxt-comic-body';
@@ -155,6 +174,17 @@
     });
     prev.addEventListener('click', () => step(-1));
     next.addEventListener('click', () => step(1));
+    fontDown.addEventListener('click', () => bumpFont(-2));
+    fontUp.addEventListener('click', () => bumpFont(2));
+    autoFitBtn.addEventListener('click', () => autoFitSelected());
+    exportBtn.addEventListener('click', async () => {
+      if (!state.currentImg) return;
+      const r = await exportResult(state.currentImg, state.items);
+      if (!r.ok) {
+        const p = host().shadowRoot.querySelector('.mxt-comic-prog');
+        if (p) p.textContent = r.error;
+      }
+    });
     again.addEventListener('click', () => translateCurrent(true));
     allBtn.addEventListener('click', () => translateAll());
     modeBtn.addEventListener('click', () => {
@@ -375,6 +405,7 @@
       d.dataset.zh = it.zh;
       d.dataset.src = it.text || '';
       d.dataset.box = it.box.join(',');
+      d.dataset.idx = String(idx);
 
       Object.assign(d.style, {
         position: 'absolute',
@@ -426,15 +457,13 @@
         d.title = '译文太长，气泡装不下。可以直接在这里改短。';
       }
 
-      let showingOriginal = false;
+      /* 单击只做「选中」，改字是双击、看原文是右键 —— 一个手势只干一件事，
+         免得用户想选中的时候字被换成原文。 */
       d.addEventListener('click', ev => {
         ev.stopPropagation();
-        if (fit.overflow && span.isContentEditable && document.activeElement === span) return;
-        showingOriginal = !showingOriginal;
-        span.textContent = showingOriginal ? d.dataset.src || '（没拿到原文）' : it.zh;
-        d.style.background = showingOriginal ? 'rgba(255,255,255,0.55)' : 'rgba(255,255,255,0.96)';
-        d.style.border = showingOriginal ? '1px dashed rgba(0,0,0,0.5)' : 'none';
+        selectOverlay(d);
       });
+      attachCorrection(d, span, it, img);
 
       if (state.debug) {
         d.style.outline = `2px solid ${fit.overflow ? '#ff3b30' : '#34c759'}`;
@@ -469,6 +498,10 @@
 
       wrap.appendChild(d);
     });
+
+    state.currentImg = img;
+    state.items = items;
+    attachRebubble(img, items);
 
     if (state.debug) debugReport(img, items);
   }
@@ -584,7 +617,7 @@
     const maxFont = Math.max(minFont, o.maxFontSize ?? 34);
     const lineHeight = o.lineHeight ?? 1.22;
     const src = String(text || '').trim();
-    if (!src) return { fontSize: minFont, lines: [''], height: 0, shrunk: false };
+    if (!src) return { fontSize: minFont, lines: [''], height: 0, shrunk: false, clamped: false, overflow: false };
 
     const w = Math.max(1, boxWidth);
     const h = Math.max(1, boxHeight);
@@ -644,14 +677,25 @@
       shrunk = true;
     }
 
+    let clamped = false;
     if (lines.length > maxLines) {
       lines = lines.slice(0, maxLines);
       const last = lines[maxLines - 1];
       lines[maxLines - 1] = last.length > 1 ? last.slice(0, -1) + '…' : last;
       shrunk = true;
+      clamped = true;
     }
 
-    return { fontSize, lines, height: lines.length * fontSize * lineHeight, shrunk };
+    const widthOver = lines.some(l => estimateTextWidth(l, fontSize) > w * 1.02);
+    const heightOver = lines.length * fontSize * lineHeight > h * 1.02;
+    return {
+      fontSize,
+      lines,
+      height: lines.length * fontSize * lineHeight,
+      shrunk,
+      clamped,
+      overflow: clamped || widthOver || heightOver
+    };
   }
 
   /* ---------------- 擦字 + 背景修复 ---------------- */
@@ -755,6 +799,283 @@
    * 生成擦字+译文后的图片（dataURL）。
    * @returns { url, bgs } url 是新图，bgs 是每个文字块的背景色（决定字色）
    */
+  /* ---------------- 人工修正 ----------------
+     自动排版一直会有它做不对的地方：气泡形状怪、译文长、拟声字要留在原位。
+     这里给用户最小的手动手段：选中、双击改字、拖动位置、调字号、重设气泡区域、导出。
+     原则：**只在用户主动操作时改页面，绝不自动覆盖**。 */
+  let selectedOverlay = null;
+
+  function selectOverlay(d) {
+    if (selectedOverlay && selectedOverlay !== d) {
+      selectedOverlay.style.boxShadow = 'none';
+    }
+    selectedOverlay = d;
+    if (d) {
+      d.style.boxShadow = '0 0 0 2px #0a84ff inset';
+      state.selectedItem = Number(d.dataset.idx);
+    } else {
+      state.selectedItem = -1;
+    }
+  }
+
+  /* 改完字或改完大小重新排版一次，样式和溢出提示都跟着更新。 */
+  function refitOverlay(d, span, it) {
+    const w = parseFloat(d.style.width) || 18;
+    const h = parseFloat(d.style.height) || 14;
+    const vertical = isVerticalBox(w, h, it.zh);
+    const fit = vertical ? layoutV(it.zh, w, h) : layoutH(it.zh, w, h);
+    d.style.font = `700 ${fit.size}px/${LINE_H} "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`;
+    d.style.outline = fit.overflow ? '2px dashed #ff9f0a' : 'none';
+    d.title = fit.overflow
+      ? `译文太长，气泡装不下（${fit.lines} 行 / ${fit.size}px）。双击改短，或拖到合适位置。`
+      : '双击改文字 · 拖动移动 · Alt+拖动重设气泡区域 · 右键看原文';
+    d.dataset.overflow = fit.overflow ? '1' : '';
+    span.textContent = it.zh;
+    return fit;
+  }
+
+  function attachCorrection(d, span, it, img) {
+    let dragging = null;
+
+    d.addEventListener('pointerdown', ev => {
+      if (ev.button !== 0) return;
+      if (span.isContentEditable && document.activeElement === span) return;
+      selectOverlay(d);
+      dragging = {
+        x: ev.clientX,
+        y: ev.clientY,
+        left: parseFloat(d.style.left) || 0,
+        top: parseFloat(d.style.top) || 0,
+        moved: false
+      };
+      d.setPointerCapture?.(ev.pointerId);
+    });
+
+    d.addEventListener('pointermove', ev => {
+      if (!dragging) return;
+      const dx = ev.clientX - dragging.x;
+      const dy = ev.clientY - dragging.y;
+      if (!dragging.moved && Math.abs(dx) + Math.abs(dy) < 4) return;
+      dragging.moved = true;
+      d.style.left = `${dragging.left + dx}px`;
+      d.style.top = `${dragging.top + dy}px`;
+    });
+
+    d.addEventListener('pointerup', () => {
+      if (!dragging) return;
+      const moved = dragging.moved;
+      dragging = null;
+      if (!moved) return;
+      /* 位置同步回百分比：擦字重绘、缩放、导出都按这个数据来 */
+      const box = pixelsToPercent(d, img);
+      if (box) {
+        it.box = box;
+        d.dataset.box = box.join(',');
+      }
+    });
+
+    /* 双击改字：用户自己决定改短还是保留 */
+    d.addEventListener('dblclick', ev => {
+      ev.stopPropagation();
+      ev.preventDefault();
+      if (!span) return;
+      span.contentEditable = 'true';
+      span.focus();
+      const range = document.createRange();
+      range.selectNodeContents(span);
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+
+      const finish = (commit) => {
+        span.contentEditable = 'false';
+        const next = span.textContent.replace(/\s+/g, ' ').trim();
+        if (commit && next) {
+          it.zh = next;
+          d.dataset.zh = next;
+        }
+        refitOverlay(d, span, it);
+        const rec = state.done.get(state.currentImg);
+        if (rec) rec.items = state.items || rec.items;
+      };
+
+      const onKey = (e) => {
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          span.removeEventListener('keydown', onKey);
+          span.blur();
+          finish(true);
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          span.removeEventListener('keydown', onKey);
+          span.textContent = d.dataset.zh || it.zh;
+          span.blur();
+          finish(false);
+        }
+      };
+      span.addEventListener('keydown', onKey);
+      span.addEventListener('blur', () => finish(true), { once: true });
+    });
+
+    /* 右键看原文 —— 单击已经被「选中」占用了 */
+    d.addEventListener('contextmenu', ev => {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const showing = d.dataset.showing === '1';
+      d.dataset.showing = showing ? '' : '1';
+      span.textContent = showing ? (d.dataset.zh || it.zh) : (d.dataset.src || '（没拿到原文）');
+      d.style.background = showing ? 'rgba(255,255,255,0.96)' : 'rgba(255,255,255,0.6)';
+      d.style.border = showing ? 'none' : '1px dashed rgba(0,0,0,0.45)';
+    });
+  }
+
+  function bumpFont(delta) {
+    const d = selectedOverlay;
+    if (!d) return;
+    const m = String(d.style.font || '').match(/([\d.]+)px/);
+    const cur = m ? parseFloat(m[1]) : 16;
+    const next = Math.max(8, Math.min(72, cur + delta));
+    d.style.font = `700 ${next}px/${LINE_H} "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`;
+    d.dataset.manualFont = String(next);
+  }
+
+  function autoFitSelected() {
+    const d = selectedOverlay;
+    if (!d) return;
+    const idx = Number(d.dataset.idx);
+    const it = (state.items || []).find((v, i) => i === idx);
+    const span = d.querySelector('span');
+    if (!it || !span) return;
+    delete d.dataset.manualFont;
+    span.textContent = it.zh;
+    refitOverlay(d, span, it);
+  }
+
+  /* 把 DOM 上的像素位置换回百分比，写回 it.box。
+     纵坐标只能用高度做基准、横坐标只能用宽度 —— 混用就是把像素当百分比那一类错。 */
+  function pixelsToPercent(d, imgEl) {
+    const host = d.parentElement;
+    if (!host || !imgEl) return null;
+    const r = imgEl.getBoundingClientRect();
+    const wr = host.getBoundingClientRect();
+    if (!r.width || !r.height) return null;
+    const left = parseFloat(d.style.left) || 0;
+    const top = parseFloat(d.style.top) || 0;
+    const w = parseFloat(d.style.width) || 0;
+    const h = parseFloat(d.style.height) || 0;
+    const toX = v => ((v - (r.left - wr.left)) / r.width) * 100;
+    const toY = v => ((v - (r.top - wr.top)) / r.height) * 100;
+    const clamp = v => Math.max(0, Math.min(100, Math.round(v * 10) / 10));
+    return [clamp(toX(left)), clamp(toY(top)), clamp(toX(left + w)), clamp(toY(top + h))];
+  }
+
+  /* Alt + 拖动：在图片上画一个框，作为选中那条的新气泡区域。 */
+  function attachRebubble(img, items) {
+    if (img.dataset.mxtRebubble) return;
+    img.dataset.mxtRebubble = '1';
+    let start = null;
+    const ghost = document.createElement('div');
+    Object.assign(ghost.style, {
+      position: 'absolute', border: '2px dashed #0a84ff', background: 'rgba(10,132,255,0.12)',
+      pointerEvents: 'none', zIndex: '2147483001', display: 'none', borderRadius: '4px'
+    });
+    const wrap = img.parentElement;
+    if (!wrap) return;
+    if (getComputedStyle(wrap).position === 'static') wrap.style.position = 'relative';
+    wrap.appendChild(ghost);
+
+    img.addEventListener('pointerdown', ev => {
+      if (!ev.altKey || state.selectedItem < 0) return;
+      ev.preventDefault();
+      const r = img.getBoundingClientRect();
+      start = { x: ev.clientX - r.left, y: ev.clientY - r.top };
+      ghost.style.display = 'block';
+      ghost.style.left = `${start.x}px`;
+      ghost.style.top = `${start.y}px`;
+      ghost.style.width = '0px';
+      ghost.style.height = '0px';
+      ghost.dataset.rel = `${r.left - wrap.getBoundingClientRect().left},${r.top - wrap.getBoundingClientRect().top}`;
+    });
+
+    img.addEventListener('pointermove', ev => {
+      if (!start) return;
+      const r = img.getBoundingClientRect();
+      const x = ev.clientX - r.left;
+      const y = ev.clientY - r.top;
+      const rel = (ghost.dataset.rel || '0,0').split(',').map(Number);
+      ghost.style.left = `${rel[0] + Math.min(start.x, x)}px`;
+      ghost.style.top = `${rel[1] + Math.min(start.y, y)}px`;
+      ghost.style.width = `${Math.abs(x - start.x)}px`;
+      ghost.style.height = `${Math.abs(y - start.y)}px`;
+    });
+
+    img.addEventListener('pointerup', ev => {
+      if (!start) return;
+      const r = img.getBoundingClientRect();
+      const x = ev.clientX - r.left;
+      const y = ev.clientY - r.top;
+      const box = [
+        Math.min(start.x, x) / r.width * 100,
+        Math.min(start.y, y) / r.height * 100,
+        Math.max(start.x, x) / r.width * 100,
+        Math.max(start.y, y) / r.height * 100
+      ].map(v => Math.max(0, Math.min(100, Math.round(v * 10) / 10)));
+      start = null;
+      ghost.style.display = 'none';
+      if (box[2] - box[0] < 1 || box[3] - box[1] < 1) return;
+      const it = (items || []).find((v, i) => i === state.selectedItem);
+      if (!it) return;
+      it.box = box;
+      const rec = state.done.get(img);
+      if (rec) rec.items = items;
+      applyToImage(img, items, rec && rec.drawable);
+    });
+  }
+
+  /* 导出：把当前这张图连同译文一起存成 PNG。 */
+  async function exportResult(img, items) {
+    const rec = state.done.get(img);
+    const src = (rec && rec.drawable) || img;
+    const c = document.createElement('canvas');
+    c.width = src.naturalWidth || src.width;
+    c.height = src.naturalHeight || src.height;
+    const ctx = c.getContext('2d');
+    try {
+      ctx.drawImage(src, 0, 0, c.width, c.height);
+    } catch {
+      return { ok: false, error: '这张图跨域，读不到像素，导不出来。可以换成浮层版后截图。' };
+    }
+    if (!state.layouts.length) return { ok: false, error: '还没有译文可以导出。' };
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    for (const l of state.layouts) {
+      const sx = c.width / 100;
+      const sy = c.height / 100;
+      const [x1, y1, x2, y2] = l.box;
+      const cx = ((x1 + x2) / 2) * sx;
+      const cy = ((y1 + y2) / 2) * sy;
+      const scale = c.width / Math.max(1, img.getBoundingClientRect().width);
+      const size = Math.max(8, l.fontSize * scale);
+      ctx.font = `700 ${size}px "PingFang SC", "Microsoft YaHei", system-ui, sans-serif`;
+      const lines = l.lines && l.lines.length ? l.lines : [l.zh || ''];
+      const total = lines.length * size * LINE_H;
+      let y = cy - total / 2 + size / 2;
+      for (const line of lines) {
+        ctx.fillStyle = 'rgba(255,255,255,0.92)';
+        ctx.fillText(line, cx, y);
+        ctx.fillStyle = '#111';
+        ctx.fillText(line, cx, y);
+        y += size * LINE_H;
+      }
+    }
+    const url = c.toDataURL('image/png');
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `mxt-comic-${Date.now()}.png`;
+    a.click();
+    return { ok: true, url };
+  }
+
   function renderTranslated(img, items) {
     const px = readPixels(img);
     if (!px) return null;
@@ -782,15 +1103,19 @@
           bubbleErr++;
         }
       }
-      const pad = adaptivePad(b, buf.width, buf.height);
+      /* 这里传的必须是 {x1,y1,x2,y2} —— adaptivePad 按这个形状算。
+         之前传的是 {box:[...]}，取到 undefined，减出来 NaN，
+         矩形兜底的坐标全成了 NaN（真实漫画里 5 条有 4 条走这条路径，
+         等于擦字和排版同时失效）。 */
+      const pad = adaptivePad({ x1: bx, y1: by, x2: bx + bw, y2: by + bh }, buf.width, buf.height);
       return {
         kind: 'rect',
         reg: null,
         rect: {
-          x1: Math.max(0, Math.round((bx / 100) * buf.width) - pad.x),
-          y1: Math.max(0, Math.round((by / 100) * buf.height) - pad.y),
-          x2: Math.min(buf.width, Math.round(((bx + bw) / 100) * buf.width) + pad.x),
-          y2: Math.min(buf.height, Math.round(((by + bh) / 100) * buf.height) + pad.y)
+          x1: Math.max(0, Math.round((bx / 100) * buf.width) - (Number.isFinite(pad.x) ? pad.x : 0)),
+          y1: Math.max(0, Math.round((by / 100) * buf.height) - (Number.isFinite(pad.y) ? pad.y : 0)),
+          x2: Math.min(buf.width, Math.round(((bx + bw) / 100) * buf.width) + (Number.isFinite(pad.x) ? pad.x : 0)),
+          y2: Math.min(buf.height, Math.round(((by + bh) / 100) * buf.height) + (Number.isFinite(pad.y) ? pad.y : 0))
         }
       };
     });
@@ -1018,7 +1343,10 @@
         chrome.runtime.sendMessage({
           type: 'mxt:translateImage',
           image: b64.data,
-          mediaType: b64.mediaType
+          mediaType: b64.mediaType,
+          /* 把原图尺寸带上：后台要靠它判断模型给的框是百分比还是像素 */
+          width: drawable.naturalWidth || drawable.width,
+          height: drawable.naturalHeight || drawable.height
         }),
         REQUEST_TIMEOUT_MS,
         '识图'
@@ -1125,7 +1453,11 @@
       if (r) {
         paintInpainted(img, r.url);
         note('');
-        if (state.debug) debugReport(img, items);
+        state.currentImg = img;
+    state.items = items;
+    attachRebubble(img, items);
+
+    if (state.debug) debugReport(img, items);
         return;
       }
       /* 擦不动就退回浮层，至少能看见译文；但要说明原因，

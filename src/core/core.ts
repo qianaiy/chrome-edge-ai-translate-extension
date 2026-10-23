@@ -116,6 +116,16 @@ export {
 } from './cache.js';
 
 export {
+  detectBoxSystem,
+  toPercentBox,
+  sanitizeVisionItems,
+  mergeDuplicateBoxes,
+  type BoxSystem,
+  type VisionItem,
+  type SanitizeResult
+} from './vision-box.js';
+
+export {
   scoreTranslation,
   summarize,
   parseModelOutput,
