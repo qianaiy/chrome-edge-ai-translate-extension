@@ -1,0 +1,173 @@
+=== typeset:all @ 2026-10-29T05:16:23+08:00 ===
+
+> chrome-edge-ai-translate-extension@1.7.7 typeset:all
+> node scripts/manga-typeset-check.mjs && node scripts/manga-typeset-check.mjs --edge
+
+调试端口 9241  假服务端口 9240
+扩展已装载：ijndedfmhjadcolakpkhcdkcgeojbadg
+  ✓ 找到测试标签页  2815007
+  ✓ 漫画指令已接受  {"ok":true}
+
+[实测数据]
+  图片渲染盒： {"left":60,"top":48,"width":420,"height":630,"nw":800,"nh":1200,"objectFit":"fill","position":"static"}
+  父容器    ： {"left":0,"top":0,"width":1264,"height":798,"position":"relative"}
+  覆盖层    ： [{"tag":"IMG","left":60,"top":48,"width":420,"height":630,"fontSize":"16px","lineHeight":"normal","zIndex":"2147483000","pointer":"none","outlineStyle":"none","data":"data:image/j","text":"","span":null}]
+  面板      ： {"msg":"","note":"","zh":4}
+  ✓ 产生译文行  zh=4
+  ✓ 擦字图层与图片完全重合  dx=0.0 dy=0.0 dw=0.0 dh=0.0
+  ✓ 缩放 50% 后擦字图层仍重合  dx=0.0 dy=0.0 dw=0.0
+  像素检测    ： {"size":[800,1200],"same":true,"out":[{"box":[8,5,45,18],"inkRatio":0.076,"ringRatio":1,"borderDiff":0.27,"outsideDiff":0},{"box":[52,22,92,36],"inkRatio":0.043,"ringRatio":1,"borderDiff":0.37,"outsideDiff":0},{"box":[20,45,70,62],"inkRatio":0.054,"ringRatio":1,"borderDiff":0.25,"outsideDiff":0},{"box":[76,68,85,95],"inkRatio":0.017,"ringRatio":1,"borderDiff":0.54,"outsideDiff":0.23}]}
+  ✓ 每个气泡内都有新画的字  全部有字
+  ✓ 气泡描边没有被擦掉  描边完整
+  ✓ 气泡外部画面没有被擦到  边界干净
+  ✓ 描边像素与原图逐点一致  未被改动
+  ✓ 可切到浮层模式  浮层版
+  ✓ 每个文字块都有文字浮层（应为 4 个）  实际 4 个
+  ✓ 每条都有译文且字号在 10-44px  ok
+  ✓ 窄高气泡用竖排  writingMode=vertical-rl
+  ✓ 普通气泡没有溢出  ok
+  ✓ 右键可切换原文  你好呀！ → Hello ther | Hello there!
+  ✓ 双击打开文字编辑  {"on":true,"idx":"0"}
+  ✓ 滚动后浮层仍对齐  最大偏移 0.0px
+  ✓ Debug Mode 输出尺寸与字号  图片原始尺寸 800×1200 / 图片显示尺寸 420×630 @ 60,-102 / 识别到文字块 4 / 共 4 / 气泡识别 4/4 core=y fn=y err=0 / 规划明细 B0.86,B0.87,B0.89,B0.97 / 像素缓冲 800x1200 len=3840000 / #0 横 27px 2行 155×82 
+  ✓ 排版数字里没有 undefined  ok
+  ✓ 气泡识别真的生效（不是退回矩形）  识别 4/4（其余退回矩形）
+
+结果：20/20 通过
+截图：D:\OneDrive\文档\默认项目\artifacts\manga-typeset
+调试端口 9241  假服务端口 9240
+扩展已装载：ijndedfmhjadcolakpkhcdkcgeojbadg
+  ✓ 找到测试标签页  2045135293
+  ✓ 漫画指令已接受  {"ok":true}
+
+[实测数据]
+  图片渲染盒： {"left":60,"top":48,"width":420,"height":630,"nw":800,"nh":1200,"objectFit":"fill","position":"static"}
+  父容器    ： {"left":0,"top":0,"width":1256,"height":798,"position":"relative"}
+  覆盖层    ： [{"tag":"IMG","left":60,"top":48,"width":420,"height":630,"fontSize":"16px","lineHeight":"normal","zIndex":"2147483000","pointer":"none","outlineStyle":"none","data":"data:image/j","text":"","span":null}]
+  面板      ： {"msg":"","note":"","zh":4}
+  ✓ 产生译文行  zh=4
+  ✓ 擦字图层与图片完全重合  dx=0.0 dy=0.0 dw=0.0 dh=0.0
+  ✓ 缩放 50% 后擦字图层仍重合  dx=0.0 dy=0.0 dw=0.0
+  像素检测    ： {"size":[800,1200],"same":true,"out":[{"box":[8,5,45,18],"inkRatio":0.076,"ringRatio":1,"borderDiff":0.27,"outsideDiff":0},{"box":[52,22,92,36],"inkRatio":0.043,"ringRatio":1,"borderDiff":0.37,"outsideDiff":0},{"box":[20,45,70,62],"inkRatio":0.054,"ringRatio":1,"borderDiff":0.25,"outsideDiff":0},{"box":[76,68,85,95],"inkRatio":0.017,"ringRatio":1,"borderDiff":0.54,"outsideDiff":0.23}]}
+  ✓ 每个气泡内都有新画的字  全部有字
+  ✓ 气泡描边没有被擦掉  描边完整
+  ✓ 气泡外部画面没有被擦到  边界干净
+  ✓ 描边像素与原图逐点一致  未被改动
+  ✓ 可切到浮层模式  浮层版
+  ✓ 每个文字块都有文字浮层（应为 4 个）  实际 4 个
+  ✓ 每条都有译文且字号在 10-44px  ok
+  ✓ 窄高气泡用竖排  writingMode=vertical-rl
+  ✓ 普通气泡没有溢出  ok
+  ✓ 右键可切换原文  你好呀！ → Hello ther | Hello there!
+  ✓ 双击打开文字编辑  {"on":true,"idx":"0"}
+  ✓ 滚动后浮层仍对齐  最大偏移 0.0px
+  ✓ Debug Mode 输出尺寸与字号  图片原始尺寸 800×1200 / 图片显示尺寸 420×630 @ 60,-102 / 识别到文字块 4 / 共 4 / 气泡识别 4/4 core=y fn=y err=0 / 规划明细 B0.86,B0.87,B0.89,B0.97 / 像素缓冲 800x1200 len=3840000 / #0 横 34px 1行 155×82 
+  ✓ 排版数字里没有 undefined  ok
+  ✓ 气泡识别真的生效（不是退回矩形）  识别 4/4（其余退回矩形）
+
+结果：20/20 通过
+截图：D:\OneDrive\文档\默认项目\artifacts\manga-typeset
+TYPESET_EXIT=0
+=== regress:all ===
+
+> chrome-edge-ai-translate-extension@1.7.7 regress:all
+> node scripts/browser-regress.mjs && node scripts/browser-regress.mjs --edge
+
+[Chrome] 回归测试，扩展目录 D:\OneDrive\文档\默认项目\dist
+[Chrome] 扩展已装载：ijndedfmhjadcolakpkhcdkcgeojbadg
+  ✓ 内容脚本就绪  {"ok":true,"ready":true,"translated":0,"busy":false,"observing":false,"mode":"smart","displayMode":"bilingual","fab":false}
+  ✓ 整页翻译产生译文  段数 5
+  ✓ 译文进入页面
+  ✓ 双语对照保留原文
+  ✓ 译文没有漏出编号标记
+  ✓ 第一段编号正确
+  ✓ 动态菜单项被自动补翻  段数 6
+  ✓ 无限滚动追加的内容被自动补翻  段数 9
+  ✓ 框架重渲染后重新翻译  段数 9
+  ✓ API Key 未出现在任何请求 URL 中  共 6 个请求
+  ✓ 一键恢复原文  段数 0
+  ✓ 恢复后各块文字回到原文  {"h1":"Regression suite landing heading","p1":"The first paragraph exists so the translator has a paragraph of body text to hand b
+  ✓ 恢复后不残留注入节点与标记  {"h1":"Regression suite landing heading","p1":"The first paragraph exists so the translator has a paragraph of body text to hand b
+  ✓ 探针页翻译完成  {"ok":true,"translated":1,"busy":false,"observing":true,"mode":"full","displayMode":"bilingual","fab":false}
+  ✓ 探针页确实产生了译文  ["标记泄漏探针译文。"]
+  ✓ 译文不泄漏 {{n}} 内联标记  ["标记泄漏探针译文。"]
+  ✓ SPA 页面内容脚本就绪
+  ✓ SPA 换页后自动翻译外文页面  等待 4661ms，段数 1
+  ✓ SPA 换页前中文页没被误翻  这是一个中文页面，打开的时候不应该被翻译。
+  ✓ 设置页拦下公网明文地址  远程地址必须用 https://，否则 API Key 和网页内容都是明文传输（example.com 不是本机或局域网地址）
+  ✓ 设置页拦下把 Key 写进地址  不要把 Key 写进地址：带凭证的 URL 会进浏览器历史、代理日志和崩溃报告。请把它填到 API Key 输入框。
+  ✓ 本机地址放行并标注明文  识别为 本地接口 · OpenAI 兼容 · 实际请求 http://127.0.0.1:60263/v1（本机/局域网地址，允许明文 http）
+
+[Chrome] 22/22 通过
+[Edge] 回归测试，扩展目录 D:\OneDrive\文档\默认项目\dist
+[Edge] 扩展已装载：ijndedfmhjadcolakpkhcdkcgeojbadg
+  ✓ 内容脚本就绪  {"ok":true,"ready":true,"translated":0,"busy":false,"observing":false,"mode":"smart","displayMode":"bilingual","fab":false}
+  ✓ 整页翻译产生译文  段数 5
+  ✓ 译文进入页面
+  ✓ 双语对照保留原文
+  ✓ 译文没有漏出编号标记
+  ✓ 第一段编号正确
+  ✓ 动态菜单项被自动补翻  段数 6
+  ✓ 无限滚动追加的内容被自动补翻  段数 9
+  ✓ 框架重渲染后重新翻译  段数 9
+  ✓ API Key 未出现在任何请求 URL 中  共 6 个请求
+  ✓ 一键恢复原文  段数 0
+  ✓ 恢复后各块文字回到原文  {"h1":"Regression suite landing heading","p1":"The first paragraph exists so the translator has a paragraph of body text to hand b
+  ✓ 恢复后不残留注入节点与标记  {"h1":"Regression suite landing heading","p1":"The first paragraph exists so the translator has a paragraph of body text to hand b
+  ✓ 探针页翻译完成  {"ok":true,"translated":1,"busy":false,"observing":true,"mode":"full","displayMode":"bilingual","fab":false}
+  ✓ 探针页确实产生了译文  ["标记泄漏探针译文。"]
+  ✓ 译文不泄漏 {{n}} 内联标记  ["标记泄漏探针译文。"]
+  ✓ SPA 页面内容脚本就绪
+  ✓ SPA 换页后自动翻译外文页面  等待 4659ms，段数 1
+  ✓ SPA 换页前中文页没被误翻  这是一个中文页面，打开的时候不应该被翻译。
+  ✓ 设置页拦下公网明文地址  远程地址必须用 https://，否则 API Key 和网页内容都是明文传输（example.com 不是本机或局域网地址）
+  ✓ 设置页拦下把 Key 写进地址  不要把 Key 写进地址：带凭证的 URL 会进浏览器历史、代理日志和崩溃报告。请把它填到 API Key 输入框。
+  ✓ 本机地址放行并标注明文  识别为 本地接口 · OpenAI 兼容 · 实际请求 http://127.0.0.1:61824/v1（本机/局域网地址，允许明文 http）
+
+[Edge] 22/22 通过
+REGRESS_EXIT=0
+=== smoke:all ===
+
+> chrome-edge-ai-translate-extension@1.7.7 smoke:all
+> node scripts/smoke.mjs && node scripts/smoke.mjs --edge
+
+[Chrome] 扩展已装载：ijndedfmhjadcolakpkhcdkcgeojbadg
+[Chrome] service worker：/background.js / MXTCore:object / onMessage:object
+[Chrome] popup 上下文：complete / runtime:object
+  ✓ manifest 版本  = 1.7.7
+  ✓ Manifest V3  = 3
+  ✓ mxt:getSettings  true
+  ✓ mxt:version
+  ✓ mxt:detect 解析服务商  "deepseek"
+  ✓ mxt:configStatus 可用  {"ok":true,"configured":false,"problem":"还没填 API Key，点扩展图标 → 打开设置","baseURL":"https://api.openai.com/v1","hasKey":false,"local":false}
+  ✓ 缺 Key 时给友好提示  "还没填 API Key，点扩展图标 → 打开设置"
+  ✓ 未知消息类型不崩
+  ✓ runtime.lastError 为空  undefined
+  ✓ 内容脚本注入 #mxt-host  {"present":true,"hasShadow":true,"shadowChildren":5,"inDom":false}
+  ✓ 网页内容未被破坏  "Hello world"
+
+[Chrome] 11/11 通过
+[Edge] 扩展已装载：ijndedfmhjadcolakpkhcdkcgeojbadg
+[Edge] service worker：/background.js / MXTCore:object / onMessage:object
+[Edge] popup 上下文：complete / runtime:object
+  ✓ manifest 版本  = 1.7.7
+  ✓ Manifest V3  = 3
+  ✓ mxt:getSettings  true
+  ✓ mxt:version
+  ✓ mxt:detect 解析服务商  "deepseek"
+  ✓ mxt:configStatus 可用  {"ok":true,"configured":false,"problem":"还没填 API Key，点扩展图标 → 打开设置","baseURL":"https://api.openai.com/v1","hasKey":false,"local":false}
+  ✓ 缺 Key 时给友好提示  "还没填 API Key，点扩展图标 → 打开设置"
+  ✓ 未知消息类型不崩
+  ✓ runtime.lastError 为空  undefined
+  ✓ 内容脚本注入 #mxt-host  {"present":true,"hasShadow":true,"shadowChildren":5,"inDom":false}
+  ✓ 网页内容未被破坏  "Hello world"
+
+[Edge] 11/11 通过
+SMOKE_EXIT=0
+===== final run 2026-10-29T05:31:25+08:00 branch=feat/comic-ux-retry-progress =====
+结果：23/23 通过
+结果：23/23 通过
+[Chrome] 22/22 通过
+[Edge] 22/22 通过
+[Chrome] 11/11 通过
+[Edge] 11/11 通过

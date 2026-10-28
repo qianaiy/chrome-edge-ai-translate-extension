@@ -10,7 +10,7 @@ import { loadBackground } from './helpers/load-background.js';
 
 const SETTINGS = {
   baseURL: 'https://api.example.com/v1',
-  apiKey: 'sk-test-0123456789',
+  apiKey: 'placeholder-key-not-a-secret',
   model: 'test-vision',
   visionModel: 'test-vision',
   protocol: 'openai',
