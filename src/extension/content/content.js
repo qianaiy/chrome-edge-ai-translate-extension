@@ -531,7 +531,19 @@
         }
       });
       port.onDisconnect.addListener(() => {
-        finish(acc ? { ok: true, text: acc } : { ok: false, error: '连接被后台断开' });
+        /* 断连不等于成功：后台可能崩了、被回收了，或端口被页面卸载打断。
+           已经收到部分译文就一起带回去，但状态必须是 unknown，让上层自己决定要不要重试。 */
+        finish(
+          acc
+            ? {
+                ok: false,
+                status: 'unknown',
+                code: 'port-closed',
+                text: acc,
+                message: '连接被后台断开，只收到一部分'
+              }
+            : { ok: false, status: 'unknown', code: 'port-closed', message: '连接被后台断开' }
+        );
       });
 
       dog.arm();
@@ -618,7 +630,14 @@
       });
       port.onDisconnect.addListener(() => {
         inserter.all(raw);
-        finish({ ok: true, inserted: inserter.count });
+        /* 同上：断连只说明这一批没走完，不能按成功插入上报 */
+        finish({
+          ok: false,
+          status: 'unknown',
+          code: 'port-closed',
+          inserted: inserter.count,
+          message: '连接被后台断开，只插入了部分段落'
+        });
       });
 
       dog.arm();
@@ -1973,6 +1992,7 @@
     if (msg.type === 'mxt:ping') {
       sendResponse({
         ok: true,
+        status: 'executed',
         ready: true,
         translated: state.nodes.length,
         busy: state.busy,
@@ -1985,27 +2005,29 @@
     }
 
     if (msg.type === 'mxt:togglePage') {
+      /* 开翻是异步的：回执只能说「已接下」，完成状态要看 mxt:status */
       togglePage(msg.mode === 'full' ? 'full' : 'smart');
-      sendResponse({ ok: true });
+      sendResponse({ status: 'accepted', takeover: true, message: '整页翻译已开始' });
       return;
     }
 
     if (msg.type === 'mxt:toggleDisplay') {
       toggleDisplay();
-      sendResponse({ ok: true, displayMode: state.displayMode });
+      sendResponse({ status: 'executed', displayMode: state.displayMode });
       return;
     }
 
     if (msg.type === 'mxt:translateSelection') {
       const text = String(msg.text || '').trim() || (getSelectionInfo()?.text ?? '');
       if (text) openCard(text, null);
-      sendResponse({ ok: true });
+      sendResponse({ status: 'accepted', takeover: true, message: '划词翻译已开始' });
       return;
     }
 
     if (msg.type === 'mxt:status') {
       sendResponse({
         ok: true,
+        status: 'executed',
         translated: state.nodes.length,
         busy: state.busy,
         observing: state.observing,

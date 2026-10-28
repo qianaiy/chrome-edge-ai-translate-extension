@@ -1223,20 +1223,54 @@ async function pingTab(tabId) {
   }
 }
 
-async function injectable(tabId) {
+/* 这个标签页为什么不能跑扩展。null 表示可以注入。
+   全仓只有这一处判定 URL —— 弹窗不再自己判一遍，否则两处文案必然漂移。 */
+async function restrictedReason(tabId) {
+  if (tabId == null) return '没有可操作的标签页';
+  let tab = null;
   try {
-    const tab = await chrome.tabs.get(tabId);
-    const url = String(tab?.url || '');
-    // chrome://、扩展商店、PDF 阅读器、about: 之类都不允许注入
-    return /^https?:/i.test(url);
+    tab = await chrome.tabs.get(tabId);
   } catch (_) {
-    return false;
+    return '拿不到这个标签页';
+  }
+  const url = String(tab?.url || '');
+  if (!url) return '这个标签页还没有地址';
+  // chrome://、扩展商店、PDF 阅读器、about: 之类都不允许注入
+  if (/^https?:/i.test(url)) return null;
+  return '这个页面不允许扩展运行（chrome:// 页面、扩展商店、PDF 阅读器都不行）';
+}
+
+async function injectable(tabId) {
+  return (await restrictedReason(tabId)) === null;
+}
+
+/* 按给定清单注入脚本；content.js 需要配套样式，所以先插 CSS */
+async function injectFiles(tabId, files = ['content/content.js']) {
+  const list = Array.isArray(files) && files.length ? files : ['content/content.js'];
+  const target = { tabId };
+  if (list.includes('content/content.js')) {
+    try {
+      await chrome.scripting.insertCSS({ target, files: ['content/content.css'] });
+    } catch (_) {
+      // 重复插入或页面受限，样式缺失不致命（Shadow DOM 里还有一份内联样式）
+    }
+  }
+  await chrome.scripting.executeScript({ target, files: list });
+}
+
+/* 注入成功与否要能回报给调用方，别再用 catch 吞掉 */
+async function tryInjectFiles(tabId, files) {
+  try {
+    await injectFiles(tabId, files);
+    return { ok: true, message: '' };
+  } catch (e) {
+    return { ok: false, message: e?.message || '内容脚本注入失败' };
   }
 }
 
 async function injectContent(tabId, { allFrames = false } = {}) {
-  const target = { tabId };
-  if (allFrames) target.allFrames = true;
+  if (!allFrames) return injectFiles(tabId, ['content/content.js']);
+  const target = { tabId, allFrames: true };
   try {
     await chrome.scripting.insertCSS({ target, files: ['content/content.css'] });
   } catch (_) {
@@ -1276,31 +1310,155 @@ async function sendToFrame(tabId, frameId, message, timeoutMs = 8000) {
 }
 
 /* 给所有 frame 发消息（主 frame 优先，失败再注入）。
-   逐个发、每个都有超时，避免某个卡住的 frame 把整次操作拖死。
-   注意：frame 那边可能有几十个（广告、追踪），这里不做成阻塞的。 */
-function sendToAllFrames(tabId, message, { inject = true } = {}) {
-  /* 主 frame 先发，别等 frame 列表 */
-  const main = sendToFrame(tabId, 0, message);
-  (async () => {
-    const targets = await frameTargets(tabId);
-    for (const t of targets) {
-      let r = await sendToFrame(tabId, t.frameIds[0], message, 4000);
-      if (r == null && inject) {
-        try {
-          await chrome.scripting.executeScript({ target: t, files: ['content/content.js'] });
-          await sendToFrame(tabId, t.frameIds[0], message, 4000);
-        } catch (_) {
-          /* 这个 frame 不让注入（跨域沙箱等），跳过 */
-        }
+   定级只看主 frame 的首个回执 + 注入结果；子 frame 是旁路，只累加计数。 */
+const RECEIPT_STATUS = ['accepted', 'executed', 'failed', 'unknown'];
+
+/* 把「对方说了什么」解释成「动作到哪一步了」。全仓唯一一处（ADR-0007 §2.2）：
+   其它地方只许读这里派生出来的 ok，不许再自己猜 ok 的含义。 */
+function normalizeReceipt(raw, ctx = {}) {
+  const frames = ctx.frames || { total: 0, executed: 0, failed: 0 };
+  frames.total++;
+  const has = !!raw && typeof raw === 'object';
+  let status = '';
+  let code = ctx.code || '';
+  let message = ctx.message || '';
+  let warn = ctx.warn || '';
+
+  if (has && RECEIPT_STATUS.includes(raw.status)) {
+    status = raw.status;
+    code = raw.code || code;
+    message = raw.message || raw.error || message;
+  } else if (has && raw.ok === true) {
+    /* 旧内容脚本只会说 ok。那不代表做完，只代表有人接了这个活。 */
+    status = 'accepted';
+    warn = warn || 'legacy-content';
+    code = code || 'legacy-content';
+    message = message || '内容脚本是旧版本，只能确认请求已送达';
+  } else if (has && raw.ok === false) {
+    status = 'failed';
+    code = code || 'peer-failed';
+    message = raw.message || raw.error || message || '页面报告失败';
+  } else {
+    /* 没有回执本身只是 unknown；但如果调用方已经判明是硬失败（受限页、注入失败、没有标签页），
+       那就是 failed，不能让它退回「不知道」，否则弹窗会把它当成还能再试一次的东西。 */
+    const known = !!code && code !== 'no-receipt';
+    status = known ? 'failed' : 'unknown';
+    code = code || 'no-receipt';
+    message = message || (known ? '这个页面跑不了' : has ? '回执无法判定' : '页面没有回执');
+  }
+
+  const executed = status === 'executed';
+  const accepted = status === 'accepted';
+
+  /* 接管：对方自己声明的，或者这次确实把脚本注进去了（注进去就有人在跑） */
+  const takeover = accepted && (raw?.takeover === true || ctx.injected === true);
+
+  if (executed) frames.executed++;
+  else if (status === 'failed' || status === 'unknown') frames.failed++;
+
+  const ok = executed || (accepted && takeover);
+  const retryable =
+    typeof ctx.retryable === 'boolean'
+      ? ctx.retryable
+      : status === 'unknown' || (status === 'failed' && code !== 'restricted-page');
+
+  return { status, ok, code, message, error: message, takeover, retryable, warn, frames };
+}
+
+/* 子 frame 的扫一遍：发不到就注入再发一次。全程只影响 frames 计数。 */
+async function sweepFrames(tabId, message, { inject, files, frames }) {
+  const targets = await frameTargets(tabId);
+  for (const t of targets) {
+    let r = await sendToFrame(tabId, t.frameIds[0], message, 4000);
+    let injected = false;
+    if (r == null && inject) {
+      try {
+        await chrome.scripting.executeScript({ target: t, files });
+        injected = true;
+        r = await sendToFrame(tabId, t.frameIds[0], message, 4000);
+      } catch (_) {
+        /* 这个 frame 不让注入（跨域沙箱等），跳过 */
       }
     }
-  })();
-  return main;
+    normalizeReceipt(r, { frames, injected });
+  }
+}
+
+async function sendToAllFrames(tabId, message, opts = {}) {
+  const {
+    inject = true,
+    files = ['content/content.js'],
+    waitAll = false,
+    sweep = true,
+    alwaysInject = false
+  } = opts;
+  const frames = { total: 0, executed: 0, failed: 0 };
+
+  if (tabId == null) {
+    return normalizeReceipt(null, {
+      frames,
+      code: 'no-tab',
+      message: '没有可操作的标签页',
+      retryable: false
+    });
+  }
+
+  /* 受限页先判、且只判一处：chrome:// 之类根本没有内容脚本，发和注入都是白费。
+     放在发消息之前，是为了不让「页面明明跑不了」被某条陈旧回执掩盖成 executed。 */
+  const blocked = await restrictedReason(tabId);
+  if (blocked) {
+    return normalizeReceipt(null, {
+      frames,
+      code: 'restricted-page',
+      message: blocked,
+      retryable: false
+    });
+  }
+
+  let raw = null;
+  let injected = false;
+
+  if (alwaysInject) {
+    /* 字幕 / 漫画一直是「先注入再发」：旧版本脚本被重注一遍，回执也就算接管了 */
+    const inj = await tryInjectFiles(tabId, files);
+    if (!inj.ok) return normalizeReceipt(null, { frames, code: 'inject-failed', message: inj.message });
+    injected = true;
+    raw = await sendToFrame(tabId, 0, message);
+  } else {
+    raw = await sendToFrame(tabId, 0, message);
+    if (raw == null && inject) {
+      /* 发的时候没人在听，再看一眼是不是导航走了（此时已经换了页面） */
+      const later = await restrictedReason(tabId);
+      if (later) {
+        return normalizeReceipt(null, {
+          frames,
+          code: 'restricted-page',
+          message: later,
+          retryable: false
+        });
+      }
+      const inj = await tryInjectFiles(tabId, files);
+      if (!inj.ok) return normalizeReceipt(null, { frames, code: 'inject-failed', message: inj.message });
+      injected = true;
+      raw = await sendToFrame(tabId, 0, message);
+    }
+  }
+
+  const receipt = normalizeReceipt(raw, { frames, injected });
+
+  if (sweep) {
+    const job = sweepFrames(tabId, message, { inject, files, frames });
+    if (waitAll) await job;
+    else job.catch(() => {});
+  }
+  return receipt;
 }
 
 /* 确保内容脚本在岗。返回 true 表示可以发消息了 */
 async function ensureContent(tabId, { retries = 3 } = {}) {
   if (tabId == null) return false;
+  /* 受限页先判掉：省掉三次注入重试，也让理由只由 restrictedReason 一处给出 */
+  if (await restrictedReason(tabId)) return false;
 
   for (let i = 0; i < retries; i++) {
     if ((await pingTab(tabId)).ready) return true;
@@ -1319,18 +1477,9 @@ async function ensureContent(tabId, { retries = 3 } = {}) {
   return false;
 }
 
-/* 给标签页发消息，发不到就先注入再发一次 */
+/* 只给主 frame 发一条消息；返回归一化回执（不抛错，调用方读 ok/message） */
 async function sendToTab(tabId, message) {
-  try {
-    return await chrome.tabs.sendMessage(tabId, message);
-  } catch (_) {
-    /* 没人在听，下面注入后重试 */
-  }
-
-  if (!(await ensureContent(tabId))) {
-    throw new Error('这个页面不允许扩展运行（chrome:// 页面、扩展商店、PDF 阅读器都不行）');
-  }
-  return chrome.tabs.sendMessage(tabId, message);
+  return sendToAllFrames(tabId, message, { sweep: false });
 }
 
 /* 注入失败时给个工具栏反馈，总比静默没反应强 */
@@ -1365,35 +1514,29 @@ chrome.runtime.onInstalled.addListener(details => {
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId !== 'mxt-selection' || !tab?.id) return;
-  try {
-    await sendToTab(tab.id, { type: 'mxt:translateSelection', text: info.selectionText || '' });
-  } catch (e) {
-    await flashBadge(tab.id, '!', e?.message || '注入失败');
-  }
+  const r = await sendToTab(tab.id, { type: 'mxt:translateSelection', text: info.selectionText || '' });
+  if (!r.ok) await flashBadge(tab.id, '!', r.message || '注入失败');
 });
 
-/* 注入字幕脚本（视频字幕用），并让它跑起来 */
+/* 注入字幕脚本（视频字幕用），并让它跑起来。
+   注入失败不再被吞掉：回执里会带 inject-failed，弹窗据此留在原地说明原因。 */
 async function runSubtitle(tabId) {
-  const target = { tabId };
-  try {
-    await chrome.scripting.executeScript({ target, files: ['content/subtitle.js'] });
-  } catch (_) {
-    /* 可能是受限页面 */
-  }
-  await sendToAllFrames(tabId, { type: 'mxt:translateSubs' });
+  return sendToAllFrames(
+    tabId,
+    { type: 'mxt:translateSubs' },
+    { files: ['content/subtitle.js'], alwaysInject: true }
+  );
 }
 
 /* 注入漫画翻译脚本，并翻当前这一页 */
 async function runComic(tabId) {
-  const target = { tabId };
-  try {
-    /* 先注入共享核心：漫画的擦字/排版要用 core 里的气泡识别与 fitText。
-       内容脚本拿不到 service worker 的 importScripts 结果，只能在这里按顺序注入。 */
-    await chrome.scripting.executeScript({ target, files: ['core.js', 'content/comic.js'] });
-  } catch (_) {
-    /* 可能是受限页面 */
-  }
-  await sendToAllFrames(tabId, { type: 'mxt:translateComic' });
+  /* 先注入共享核心：漫画的擦字/排版要用 core 里的气泡识别与 fitText。
+     内容脚本拿不到 service worker 的 importScripts 结果，只能在这里按顺序注入。 */
+  return sendToAllFrames(
+    tabId,
+    { type: 'mxt:translateComic' },
+    { files: ['core.js', 'content/comic.js'], alwaysInject: true }
+  );
 }
 
 chrome.commands.onCommand.addListener(async command => {
@@ -1402,11 +1545,8 @@ chrome.commands.onCommand.addListener(async command => {
   if (!tab?.id) return;
 
   if (command === 'toggle-subtitle') {
-    try {
-      await runSubtitle(tab.id);
-    } catch (e) {
-      await flashBadge(tab.id, '!', e?.message || '字幕翻译失败');
-    }
+    const r = await runSubtitle(tab.id);
+    if (!r.ok) await flashBadge(tab.id, '!', r.message || '字幕翻译失败');
     return;
   }
 
@@ -1415,16 +1555,12 @@ chrome.commands.onCommand.addListener(async command => {
       ? { type: 'mxt:toggleDisplay' }
       : { type: 'mxt:togglePage', mode: command === 'toggle-page-full' ? 'full' : 'smart' };
 
-  try {
-    if (command === 'toggle-page-full' || command === 'toggle-display') {
-      /* 整页和「仅译文」都要覆盖 iframe 里的内容 */
-      await sendToAllFrames(tab.id, message);
-    } else {
-      await sendToTab(tab.id, message);
-    }
-  } catch (e) {
-    await flashBadge(tab.id, '!', e?.message || '注入失败');
-  }
+  /* 整页和「仅译文」都要覆盖 iframe 里的内容 */
+  const r =
+    command === 'toggle-page-full' || command === 'toggle-display'
+      ? await sendToAllFrames(tab.id, message)
+      : await sendToTab(tab.id, message);
+  if (!r.ok) await flashBadge(tab.id, '!', r.message || '注入失败');
 });
 
 /* ------------------------- 语音识别（视频没字幕时） ------------------------- */
@@ -1790,34 +1926,30 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === 'mxt:tabToggle') {
         const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
         const tabId = msg.tabId ?? active?.id;
-        if (msg.mode === 'full') {
-          /* 整页：主 frame + 所有 iframe 都翻 */
-          await sendToAllFrames(tabId, { type: 'mxt:togglePage', mode: 'full' });
-        } else {
-          await sendToTab(tabId, { type: 'mxt:togglePage', mode: 'smart' });
-        }
-        return sendResponse({ ok: true });
+        /* 整页：主 frame + 所有 iframe 都翻；正文：只发主 frame */
+        const receipt =
+          msg.mode === 'full'
+            ? await sendToAllFrames(tabId, { type: 'mxt:togglePage', mode: 'full' })
+            : await sendToTab(tabId, { type: 'mxt:togglePage', mode: 'smart' });
+        return sendResponse(receipt);
       }
 
       if (msg.type === 'mxt:tabDisplay') {
         const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
         const tabId = msg.tabId ?? active?.id;
-        await sendToAllFrames(tabId, { type: 'mxt:toggleDisplay' });
-        return sendResponse({ ok: true });
+        return sendResponse(await sendToAllFrames(tabId, { type: 'mxt:toggleDisplay' }));
       }
 
       if (msg.type === 'mxt:tabSubtitle') {
         const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
         const tabId = msg.tabId ?? active?.id;
-        await runSubtitle(tabId);
-        return sendResponse({ ok: true });
+        return sendResponse(await runSubtitle(tabId));
       }
 
       if (msg.type === 'mxt:tabComic') {
         const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
         const tabId = msg.tabId ?? active?.id;
-        await runComic(tabId);
-        return sendResponse({ ok: true });
+        return sendResponse(await runComic(tabId));
       }
 
       if (msg.type === 'mxt:transcribe') {
@@ -1868,11 +2000,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       if (msg.type === 'mxt:tabStatus') {
         const [active] = await chrome.tabs.query({ active: true, currentWindow: true });
         const tabId = msg.tabId ?? active?.id;
+        /* 这是查询不是动作，所以保留 {ok,status,...} 形状；
+           但「能不能在这个页面跑」的理由只能来自 restrictedReason 一处。 */
         if (!(await ensureContent(tabId))) {
-          return sendResponse({ ok: true, status: null, reason: '页面不允许扩展运行' });
+          const restricted = await restrictedReason(tabId);
+          const why = restricted || '页面不允许扩展运行';
+          return sendResponse({
+            ok: true,
+            status: null,
+            reason: why,
+            message: why,
+            code: restricted ? 'restricted-page' : 'not-ready'
+          });
         }
         const status = await chrome.tabs.sendMessage(tabId, { type: 'mxt:status' });
-        return sendResponse({ ok: true, status });
+        return sendResponse({ ok: true, status, reason: '', message: '', code: '' });
       }
 
       if (msg.type === 'mxt:version') {

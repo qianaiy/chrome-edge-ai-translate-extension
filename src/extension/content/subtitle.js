@@ -626,7 +626,7 @@
         const lang = (res && res.settings && res.settings.targetLang) || '简体中文';
         return run(lang);
       });
-      sendResponse({ ok: true });
+      sendResponse({ status: 'accepted', takeover: true, message: '字幕翻译已开始' });
       return;
     }
   });
