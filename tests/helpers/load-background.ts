@@ -21,6 +21,18 @@ export interface LoadOptions {
   settings?: Record<string, unknown>;
   /** 替换 fetch；默认返回一个 401 */
   fetchImpl?: (url: string, init: RequestInit) => Promise<unknown>;
+  /** 追加导出的内部函数（回执契约的测试要直接调 sendToAllFrames 之类） */
+  exports?: string[];
+  /** 覆盖默认的 chrome.tabs 实现 */
+  tabs?: Record<string, unknown>;
+  /** 覆盖默认的 chrome.scripting 实现 */
+  scripting?: Record<string, unknown>;
+  /** 覆盖默认的 chrome.webNavigation 实现 */
+  webNavigation?: Record<string, unknown>;
+  /** 覆盖默认的 chrome.action 实现 */
+  action?: Record<string, unknown>;
+  /** send() 等回执的超时，默认与既有用例一致为 1000ms */
+  timeoutMs?: number;
 }
 
 export interface BackgroundHarness {
@@ -121,6 +133,12 @@ export async function loadBackground(opts: LoadOptions = {}): Promise<Background
     }
   });
 
+  /* 只在调用方显式给了覆盖时才动这些 API，默认行为与既有用例完全一致 */
+  if (opts.tabs) Object.assign(chrome.tabs, opts.tabs);
+  if (opts.scripting) Object.assign(chrome.scripting, opts.scripting);
+  if (opts.webNavigation) Object.assign(chrome.webNavigation, opts.webNavigation);
+  if (opts.action) Object.assign((chrome as any).action, opts.action);
+
   const fetchImpl =
     opts.fetchImpl ||
     (async () => ({
@@ -134,13 +152,14 @@ export async function loadBackground(opts: LoadOptions = {}): Promise<Background
     return fetchImpl(String(url), init || {});
   };
 
+  const extra = (opts.exports || []).filter(Boolean).join(', ');
   const wrapped = `return (function(){ ${src}
     return {
       DEFAULTS, PROTOCOLS, RETRYABLE_STATUS, getSettings, cacheKey,
       buildRequest, extractText, extractDelta, callOnce, chat,
       parseMarked, systemPrompt, systemPromptSingle, stripMarkers,
       resolveBase, detectProvider, guessProtocol, protocolOrder,
-      configProblem, isLocalEndpoint, redactSecrets, listModelsOnce
+      configProblem, isLocalEndpoint, redactSecrets, listModelsOnce${extra ? `, ${extra}` : ''}
     }; })();`;
 
   /* 浏览器里服务工作者用 importScripts('core.js') 把共享核心挂到全局；
@@ -161,7 +180,7 @@ export async function loadBackground(opts: LoadOptions = {}): Promise<Background
     /* 监听器内部是 async IIFE，用超时兜底避免测试挂死 */
     return Promise.race([
       answered,
-      new Promise(res => setTimeout(() => res(undefined), 1000))
+      new Promise(res => setTimeout(() => res(undefined), opts.timeoutMs ?? 1000))
     ]);
   };
 

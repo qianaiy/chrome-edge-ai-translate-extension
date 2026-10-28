@@ -102,17 +102,8 @@ async function init() {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;
 
-  const usable = /^https?:/i.test(tab?.url || '');
-  if (!usable) {
-    $('translatePage').disabled = true;
-    status.textContent = '当前页面不支持（只能是普通网页）';
-    $('translatePage').textContent = '翻译正文';
-    $('translateAll').disabled = true;
-    $('toggleDisplay').disabled = true;
-    return;
-  }
-
   // 看看这一页是不是已经翻译过（顺带确认内容脚本在岗，不在就注入）
+  // 「这个页面能不能跑」只由后台一处判定，这里不再自带 URL 规则，只读它的结论
   const st = await chrome.runtime
     .sendMessage({ type: 'mxt:tabStatus', tabId: activeTabId })
     .catch(() => null);
@@ -133,7 +124,7 @@ async function init() {
     $('translateAll').disabled = true;
     $('toggleDisplay').disabled = true;
     $('translatePage').textContent = '翻译正文';
-    status.textContent = st?.reason || '这个页面不允许扩展运行';
+    status.textContent = st?.message || st?.reason || '这个页面不允许扩展运行';
   }
 }
 
@@ -159,14 +150,22 @@ async function sendTab(type, extra) {
   const status = $('status');
   const res = await chrome.runtime
     .sendMessage({ type, tabId: activeTabId, ...(extra || {}) })
-    .catch(e => ({ ok: false, error: e?.message || String(e) }));
+    .catch(e => ({
+      ok: false,
+      status: 'failed',
+      code: 'popup-send-failed',
+      message: e?.message || String(e),
+      retryable: true
+    }));
 
-  if (res && res.ok) {
+  /* 关窗的唯一条件是后台归一化后的 ok：executed，或 accepted 且确实有人接管。
+     失败/未知一律留着窗口说明原因——重不重试交给用户，不自动重发。 */
+  if (res && res.ok === true) {
     window.close();
     return;
   }
   status.style.color = '#b91c1c';
-  status.textContent = res?.error || '没发出去，刷新页面再试';
+  status.textContent = res?.message || res?.error || '没发出去，刷新页面再试';
 }
 
 async function togglePage(mode) {

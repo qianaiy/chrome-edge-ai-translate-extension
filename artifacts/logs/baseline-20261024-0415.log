@@ -1,0 +1,56 @@
+===== 基线验证 2026-10-24 04:15:56 =====
+--- npm run verify ---
+
+[2m Test Files [22m [1m[32m33 passed[39m[22m[90m (33)[39m
+[2m      Tests [22m [1m[32m571 passed[39m[22m[90m (571)[39m
+[2m   Start at [22m 04:16:00
+[2m   Duration [22m 2.28s[2m (import 40%, tests 28%, transform 20%, worker 12%)[22m
+
+[2m    Isolate [22m [33m33 workers spawned[39m[2m · ~414ms startup each (spawn + environment, per file)[22m
+[2m            [22m [2mat least ~827ms faster with [22m[33misolate: false[39m[2m — reuses workers across files instead of one per file[22m
+
+
+> chrome-edge-ai-translate-extension@1.7.7 build
+> node scripts/build.mjs
+
+构建 译点 扩展…
+  ✓ core.js
+  ✓ extension/
+  ✓ manifest 校验通过（11 个引用文件）
+
+完成：dist/ 共 15 个文件，364.6 KB
+在 chrome://extensions/ 打开开发者模式 → 加载已解压的扩展程序 → 选 dist/
+--- npm run typeset:all ---
+调试端口 9241  假服务端口 9240
+扩展已装载：ijndedfmhjadcolakpkhcdkcgeojbadg
+  ✓ 找到测试标签页  93090912
+  ✓ 漫画指令已接受  {"ok":true}
+
+[实测数据]
+  图片渲染盒： {"left":60,"top":48,"width":420,"height":630,"nw":800,"nh":1200,"objectFit":"fill","position":"static"}
+  父容器    ： {"left":0,"top":0,"width":1256,"height":798,"position":"relative"}
+  覆盖层    ： [{"tag":"IMG","left":60,"top":48,"width":420,"height":630,"fontSize":"16px","lineHeight":"normal","zIndex":"2147483000","pointer":"none","outlineStyle":"none","data":"data:image/j","text":"","span":null}]
+  面板      ： {"msg":"","note":"","zh":4}
+  ✓ 产生译文行  zh=4
+  ✓ 擦字图层与图片完全重合  dx=0.0 dy=0.0 dw=0.0 dh=0.0
+  ✓ 缩放 50% 后擦字图层仍重合  dx=0.0 dy=0.0 dw=0.0
+  像素检测    ： {"size":[800,1200],"same":true,"out":[{"box":[8,5,45,18],"inkRatio":0.076,"ringRatio":1,"borderDiff":0.27,"outsideDiff":0},{"box":[52,22,92,36],"inkRatio":0.043,"ringRatio":1,"borderDiff":0.37,"outsideDiff":0},{"box":[20,45,70,62],"inkRatio":0.054,"ringRatio":1,"borderDiff":0.25,"outsideDiff":0},{"box":[76,68,85,95],"inkRatio":0.017,"ringRatio":1,"borderDiff":0.54,"outsideDiff":0.23}]}
+  ✓ 每个气泡内都有新画的字  全部有字
+  ✓ 气泡描边没有被擦掉  描边完整
+  ✓ 气泡外部画面没有被擦到  边界干净
+  ✓ 描边像素与原图逐点一致  未被改动
+  ✓ 可切到浮层模式  浮层版
+  ✓ 四个气泡都有文字浮层  实际 4 个
+  ✓ 每条都有译文且字号在 10-44px  ok
+  ✓ 窄高气泡用竖排  writingMode=vertical-rl
+  ✓ 普通气泡没有溢出  ok
+  ✓ 点击可切换原文  你好呀！ → Hello ther
+  ✓ 滚动后浮层仍对齐  最大偏移 0.0px
+  ✓ Debug Mode 输出尺寸与字号  图片原始尺寸 800×1200 / 图片显示尺寸 420×630 @ 60,-102 / 识别到文字块 4 / 共 4 / 气泡识别 4/4 core=y fn=y err=0 / 规划明细 B0.86,B0.87,B0.89,B0.97 / 像素缓冲 800x1200 len=3840000 / #0 横 34px 1行 155×82 
+  ✓ 气泡识别真的生效（不是退回矩形）  识别 4/4
+
+结果：18/18 通过
+截图：D:\OneDrive\文档\默认项目\artifacts\manga-typeset
+--- npm run regress:all ---
+[Chrome] 22/22 通过
+[Edge] 22/22 通过

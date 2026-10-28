@@ -33,7 +33,8 @@ const PATTERNS = [
   { name: 'JWT', re: /\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b/g },
   {
     name: '疑似硬编码的 apiKey 值',
-    re: /["']?(?:api[_-]?key|apikey|token|secret|password)["']?\s*[:=]\s*["'][^"'\s]{16,}["']/gi
+    /* 值本身单独成组：占位符判断要看的是「值」，不是整条 `apiKey: '...'` */
+    re: /["']?(?:api[_-]?key|apikey|token|secret|password)["']?\s*[:=]\s*["']([^"'\s]{16,})["']/gi
   }
 ];
 
@@ -135,7 +136,7 @@ async function main() {
           re.lastIndex = 0;
           const m = re.exec(line);
           if (!m) continue;
-          if (isPlaceholder(m[0])) continue;
+          if (isPlaceholder(m[1] || m[0])) continue;
           findings.push({
             rel,
             line: i + 1,

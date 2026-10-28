@@ -224,6 +224,37 @@
      和一个 ScriptProcessor/Analyser 上，攒够数据就编码成 WAV 送去识别。 */
   const audioState = { ctx: null, source: null, proc: null, chunks: [], capturing: false, sampleRate: 44100 };
 
+  /* 一次「点开字幕」= 一个会话。关掉就换代，旧会话在途的任何结果都作废。
+     注意：已经发出去的识别请求撤不回来，这里只能保证不再使用它的结果。 */
+  let session = 0;
+  /* 录音窗口的计时器句柄：关面板时要能立刻叫醒等待，而不是干等满 120 秒 */
+  let captureWait = null;
+
+  function waitWhileCapturing(seconds) {
+    return new Promise(resolve => {
+      const done = () => {
+        captureWait = null;
+        resolve();
+      };
+      const timer = setTimeout(done, seconds * 1000);
+      captureWait = {
+        timer,
+        done: () => {
+          clearTimeout(timer);
+          done();
+        }
+      };
+    });
+  }
+
+  function cancelCaptureWait() {
+    const w = captureWait;
+    if (!w) return;
+    captureWait = null;
+    clearTimeout(w.timer);
+    w.done();
+  }
+
   async function captureAudio(video, { seconds = 120 } = {}) {
     if (audioState.capturing) return null;
     const Ctx = window.AudioContext || window.webkitAudioContext;
@@ -264,11 +295,14 @@
       /* 自动播放被拦了：让用户点一下播放 */
     }
 
-    await new Promise(r => setTimeout(r, seconds * 1000));
+    await waitWhileCapturing(seconds);
+    /* 等待期间被关掉：不编码、不上报，当没录到 */
+    if (!audioState.capturing) return null;
     return stopAudio(ctx);
   }
 
-  function stopAudio(ctx) {
+  /* 停采集。encode=false 用于「关掉」，只拆线路不编码，别白算一份没人要的 WAV。 */
+  function stopAudio(ctx, { encode = true } = {}) {
     audioState.capturing = false;
     const chunks = audioState.chunks || [];
     const rate = audioState.sampleRate || 44100;
@@ -283,8 +317,16 @@
     audioState.source = null;
     audioState.proc = null;
     audioState.chunks = [];
-    if (!chunks.length) return null;
+    if (!encode || !chunks.length) return null;
     return { data: encodeWav(chunks, rate), mediaType: 'audio/wav' };
+  }
+
+  /* 关掉面板要做的事，一件都不能少：换代 → 停采集 → 清计时器 → 撤 track。
+     顺序有讲究：先换代，后面所有 await 醒来都会认出自己过期。 */
+  function cancelSession() {
+    session++;
+    cancelCaptureWait();
+    stopAudio(audioState.ctx, { encode: false });
   }
 
   /* Float32 采样 -> WAV（16bit PCM，单声道） */
@@ -339,13 +381,14 @@
 
   /* ------------------------- 翻译 ------------------------- */
 
-  async function translateCues(cues, targetLang) {
+  async function translateCues(cues, targetLang, stale) {
     if (!cues.length) return [];
     /* 一次最多 60 条，太多就分批 */
     const CHUNK = 60;
     const out = [];
     let failed = 0;
     for (let i = 0; i < cues.length; i += CHUNK) {
+      if (stale && stale()) return out;
       const part = cues.slice(i, i + CHUNK);
       const texts = part.map(c => c.text);
       let res = null;
@@ -430,7 +473,7 @@
     const list = document.createElement('div');
     list.className = 'mxt-sub-list';
     shadow.append(head, list);
-    close.addEventListener('click', () => host.classList.remove('mxt-sub-open'));
+    close.addEventListener('click', () => closePanel());
     (document.body || document.documentElement).appendChild(host);
     return host;
   }
@@ -510,6 +553,10 @@
       showMsg('页面上没有找到视频');
       return;
     }
+    /* 开新会话：上一次没走完的流程从这个点起全部作废 */
+    const my = ++session;
+    const stale = () => my !== session;
+
     const host = ensureHost();
     const video = videos[0];
     host.classList.add('mxt-sub-open');
@@ -522,44 +569,88 @@
     list.appendChild(loading);
 
     const found = await collectFromVideo(video);
+    if (stale()) return;
     if (!found) {
       /* 没有字幕轨：试试从视频里抽音频做语音识别 */
       loading.textContent = '没找到字幕轨，正在试着听声音识别…';
-      const asr = await tryAsr(video, loading);
+      const asr = await tryAsr(video, loading, stale);
+      if (stale()) return;
       if (!asr || !asr.length) {
         loading.textContent =
           '这个视频既没有字幕轨，语音识别也没成功（可在设置里填「语音识别模型」后再试）';
         return;
       }
       loading.textContent = `识别出 ${asr.length} 句，正在翻译…`;
-      const asrCues = await translateCues(asr, targetLang);
+      const asrCues = await translateCues(asr, targetLang, stale);
+      if (stale()) return;
       renderCues(host, asrCues, video);
       attachTrack(video, asrCues);
       return;
     }
     loading.textContent = `找到 ${found.cues.length} 条字幕，正在翻译…`;
 
-    const cues = await translateCues(found.cues, targetLang);
+    const cues = await translateCues(found.cues, targetLang, stale);
+    if (stale()) return;
     renderCues(host, cues, video);
     attachTrack(video, cues);
   }
 
   /* 没字幕轨时：抓音频 -> 语音识别 */
-  async function tryAsr(video, loading) {
+  async function tryAsr(video, loading, stale) {
     try {
       loading.textContent = '正在录声音（最多 2 分钟，请让视频播着）…';
       const audio = await captureAudio(video, { seconds: 120 });
+      if (stale && stale()) return null;
       if (!audio) {
         loading.textContent = '没录到声音（视频可能没在播，或者跨域不让抓）';
         return null;
       }
       loading.textContent = '录音完成，正在识别…';
       const cues = await transcribe(audio);
+      /* 识别请求已经发出去了，撤不回来；回来的结果如果已经没人要，就丢掉 */
+      if (stale && stale()) return null;
       return cues;
     } catch (e) {
+      if (stale && stale()) return null;
       loading.textContent = '语音识别失败：' + (e?.message || e);
       return null;
     }
+  }
+
+  /* 撤掉插件挂进去的那条字幕轨，并释放它的 blob URL */
+  function detachTrack(video) {
+    const v = video || Array.from(document.querySelectorAll('video'))[0] || null;
+    if (!v) return;
+    const track = v.__mxtTrack;
+    v.__mxtTrack = null;
+    if (!track) return;
+    if (track.parentNode) track.parentNode.removeChild(track);
+    if (track.__mxtUrl) {
+      try {
+        URL.revokeObjectURL(track.__mxtUrl);
+      } catch (_) {
+        /* 忽略 */
+      }
+      track.__mxtUrl = null;
+    }
+  }
+
+  /* 「关闭」= 停止 + 清场 + 如实说明。不是「假装什么都没发生过」，
+     也不是「取消计费」——已经发出去的请求，我们没法替服务商撤回。 */
+  function closePanel() {
+    cancelSession();
+    detachTrack();
+    const host = document.getElementById(HOST_ID);
+    if (!host) return;
+    host.classList.remove('mxt-sub-open');
+    const list = host.shadowRoot && host.shadowRoot.querySelector('.mxt-sub-list');
+    if (!list) return;
+    list.textContent = '';
+    const d = document.createElement('div');
+    d.className = 'mxt-sub-empty';
+    d.textContent =
+      '已停止。已经发出去的识别请求无法撤回，费用以服务商账单为准；结果不再显示。再点一次「字幕」可以重来。';
+    list.appendChild(d);
   }
 
   /* 把双语字幕塞进播放器（浏览器会显示成原生字幕） */
@@ -626,7 +717,7 @@
         const lang = (res && res.settings && res.settings.targetLang) || '简体中文';
         return run(lang);
       });
-      sendResponse({ ok: true });
+      sendResponse({ status: 'accepted', takeover: true, message: '字幕翻译已开始' });
       return;
     }
   });

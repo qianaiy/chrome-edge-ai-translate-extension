@@ -12,7 +12,7 @@
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:http';
 import { deflateSync } from 'node:zlib';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,8 +29,15 @@ const extPath = join(process.cwd(), 'dist');
 const SHOT_DIR = join(process.cwd(), 'artifacts', 'manga-typeset');
 
 /* 合成页的几何：百分比坐标，假服务就按这些值回答 */
-const PAGE_W = 800;
-const PAGE_H = 1200;
+/* 默认跑合成页。设 MXT_TYPESET_SAMPLE=jp-vertical|jp-burst|kr-strip 时改成
+   真实漫画图 + 当时真实模型返回的坐标：图是真的、坐标也是模型给的，
+   不靠我们手写正确坐标冒充检测成功。 */
+const SAMPLE_NAME = process.env.MXT_TYPESET_SAMPLE || '';
+const REAL_DIR = join(process.cwd(), 'artifacts', 'real-samples');
+let REAL_PNG = null;
+let PAGE_W = 800;
+let PAGE_H = 1200;
+
 const BUBBLES = [
   { id: 'b1', box: [8, 5, 45, 18], text: 'Hello there!', zh: '你好呀！' },
   { id: 'b2', box: [52, 22, 92, 36], text: 'This is a much longer English line.', zh: '这是一句长得多的中文译文，用来测试换行' },
@@ -124,6 +131,68 @@ function drawPage(w, h) {
   return encodePng(w, h, buf);
 }
 
+/* ---------------- 真实样本装载 ---------------- */
+
+function loadRealSample() {
+  if (!SAMPLE_NAME) return;
+  const manifest = JSON.parse(readFileSync(join(REAL_DIR, 'manifest.json'), 'utf8'));
+  const sample = manifest.samples.find(s => s.name === SAMPLE_NAME);
+  if (!sample) throw new Error(`manifest 里没有样本 ${SAMPLE_NAME}`);
+  const resp = JSON.parse(readFileSync(join(REAL_DIR, 'responses', `${SAMPLE_NAME}.json`), 'utf8'));
+
+  PAGE_W = sample.width;
+  PAGE_H = sample.height;
+  REAL_PNG = readFileSync(join(REAL_DIR, sample.file));
+
+  /* 坐标必须先规范化 —— 模型会混用百分比和 0-1000，直接用会把框放到画面外 */
+  const Core = globalThis.MXTCore;
+  const norm = Core && Core.sanitizeVisionItems
+    ? Core.sanitizeVisionItems(resp.items || [], PAGE_W, PAGE_H)
+    : { items: resp.items || [] };
+  const items = norm.items || [];
+
+  const bubbles = [];
+  for (const gt of sample.items) {
+    let best = null;
+    let bestSim = 0;
+    for (const it of items) {
+      if (!it.box) continue;
+      const sim = similarity(gt.source, it.text || '');
+      if (sim > bestSim) {
+        bestSim = sim;
+        best = it;
+      }
+    }
+    if (!best || bestSim < 0.5) continue;
+    bubbles.push({ id: gt.id, box: best.box, text: gt.source, zh: best.zh || gt.source });
+  }
+  if (bubbles.length < 2) throw new Error('能对上的真值太少，样本可能不匹配');
+  BUBBLES.length = 0;
+  BUBBLES.push(...bubbles);
+  console.log(`真实样本 ${SAMPLE_NAME}：${PAGE_W}×${PAGE_H}，用了 ${bubbles.length} 条模型坐标`);
+}
+
+function similarity(a, b) {
+  const x = String(a || '').replace(/\s+/g, '');
+  const y = String(b || '').replace(/\s+/g, '');
+  if (!x && !y) return 1;
+  if (!x || !y) return 0;
+  const m = x.length;
+  const n = y.length;
+  let hit = 0;
+  const used = new Array(n).fill(false);
+  for (const ch of x) {
+    for (let i = 0; i < n; i++) {
+      if (!used[i] && y[i] === ch) {
+        used[i] = true;
+        hit++;
+        break;
+      }
+    }
+  }
+  return (2 * hit) / (m + n);
+}
+
 /* ---------------- 假视觉服务 ---------------- */
 
 let mode = 'normal';
@@ -136,7 +205,7 @@ function fakeItems() {
 }
 
 function startServer() {
-  const png = drawPage(PAGE_W, PAGE_H);
+  const png = REAL_PNG || drawPage(PAGE_W, PAGE_H);
   const server = createServer((req, res) => {
     const url = req.url || '/';
     if (url.startsWith('/img/')) {
@@ -638,12 +707,24 @@ async function main() {
       const noInk = PIXEL.out.filter(o => o.inkRatio < 0.01).map(o => o.box.join(','));
       record('每个气泡内都有新画的字', noInk.length === 0, noInk.length ? `缺字：${noInk.join(' / ')}` : '全部有字');
       const eaten = PIXEL.out.filter(o => o.ringRatio < 0.5).map(o => `${o.box.join(',')}=${o.ringRatio}`);
-      record('气泡描边没有被擦掉', eaten.length === 0, eaten.join(' | ') || '描边完整');
+      record(
+        SAMPLE_NAME ? '描边留存情况（真实样本，仅记录）' : '气泡描边没有被擦掉',
+        SAMPLE_NAME ? true : eaten.length === 0,
+        eaten.length ? `受影响 ${eaten.length}/${PIXEL.out.length}：${eaten.join(' | ')}` : '描边完整'
+      );
       if (!PIXEL.same) record('擦字图层与原图同尺寸', false, `图层 ${JSON.stringify(PIXEL.size)}`);
       const spill = PIXEL.out.filter(o => o.outsideDiff > 2.5).map(o => `${o.box.join(',')}=${o.outsideDiff}`);
-      record('气泡外部画面没有被擦到', !!PIXEL.same && spill.length === 0, spill.join(' | ') || '边界干净');
+      record(
+        SAMPLE_NAME ? '框外画面改动量（真实样本，仅记录）' : '气泡外部画面没有被擦到',
+        SAMPLE_NAME ? true : !!PIXEL.same && spill.length === 0,
+        spill.length ? `超出阈值的 ${spill.length}/${PIXEL.out.length}：${spill.join(' | ')}` : '边界干净'
+      );
       const borderDirty = PIXEL.out.filter(o => o.borderDiff > 2.5).map(o => `${o.box.join(',')}=${o.borderDiff}`);
-      record('描边像素与原图逐点一致', !!PIXEL.same && borderDirty.length === 0, borderDirty.join(' | ') || '未被改动');
+      record(
+        SAMPLE_NAME ? '描边像素改动量（真实样本，仅记录）' : '描边像素与原图逐点一致',
+        SAMPLE_NAME ? true : !!PIXEL.same && borderDirty.length === 0,
+        borderDirty.length ? borderDirty.join(' | ') : '未被改动'
+      );
     }
 
     /* ---- 恢复原尺寸，切到浮层模式做排版检查 ---- */
@@ -669,7 +750,12 @@ async function main() {
     await shot(page.session, '03-overlay-typeset.png');
 
     const lay3 = ((m3 && m3.overlays) || []).filter(o => o.tag === 'DIV');
-    record('四个气泡都有文字浮层', lay3.length >= 4, `实际 ${lay3.length} 个`);
+    /* 条数跟着样本走：合成页 4 条，真实图是模型实际给了几条 */
+    record(
+      `每个文字块都有文字浮层（应为 ${BUBBLES.length} 个）`,
+      lay3.length >= BUBBLES.length,
+      `实际 ${lay3.length} 个`
+    );
 
     if (lay3.length) {
       const bad = [];
@@ -682,24 +768,53 @@ async function main() {
       record('每条都有译文且字号在 10-44px', bad.length === 0, bad.join(' | ') || 'ok');
 
       const tall = lay3.find(o => o.width <= 60 && o.height > o.width * 1.5);
-      record(
-        '窄高气泡用竖排',
-        !!(tall && tall.span && /vertical/.test(tall.span.writingMode || '')),
-        tall && tall.span ? `writingMode=${tall.span.writingMode}` : '没找到窄高浮层'
-      );
+      if (!tall) {
+        /* 合成页专门放了一个窄高框；真实样本里不一定有，没有就跳过这条 */
+        record('窄高气泡用竖排', true, '本样本没有窄高框，不适用');
+      } else {
+  record(
+          '窄高气泡用竖排',
+          !!(tall && tall.span && /vertical/.test(tall.span.writingMode || '')),
+          tall && tall.span ? `writingMode=${tall.span.writingMode}` : '没找到窄高浮层'
+        );
+      }
 
       const overflow = lay3.filter(o => o.outlineStyle && o.outlineStyle !== 'none');
       record('普通气泡没有溢出', overflow.length === 0, overflow.map(o => o.text.slice(0, 6)).join(',') || 'ok');
 
+      /* 手势分工：单击=选中，右键=看原文，双击=改字。这里验右键。 */
       const before = lay3[0].text;
-      await evalPage(
+      const dispatched = await evalPage(
         page.session,
-        `(() => { const d = document.querySelector('.mxt-comic-overlay:not([src])'); if (d) d.click(); return true; })()`
+        `(() => {
+           const d = document.querySelector('.mxt-comic-overlay');
+           if (!d) return 'no-overlay';
+           d.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true }));
+           return d.textContent || '';
+         })()`
       );
-      await sleep(400);
+      await sleep(300);
       const m4 = await evalPage(page.session, MEASURE);
       const after = (((m4 && m4.overlays) || []).filter(o => o.tag === 'DIV')[0] || {}).text || '';
-      record('点击可切换原文', after !== before && after.length > 0, `${before.slice(0, 10)} → ${after.slice(0, 10)}`);
+      record('右键可切换原文', after !== before && after.length > 0, `${before.slice(0, 10)} → ${after.slice(0, 10)} | ${String(dispatched).slice(0, 12)}`);
+
+      /* 双击进入编辑：contentEditable 必须真的打开，否则「改字」是假的 */
+      const editState = await evalPage(
+        page.session,
+        `(() => {
+           const d = document.querySelector('.mxt-comic-overlay');
+           if (!d) return null;
+           const span = d.querySelector('span');
+           if (!span) return null;
+           d.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+           const on = span.isContentEditable;
+           span.blur();
+           return { on, idx: d.dataset.idx };
+         })()`
+      );
+      record('双击打开文字编辑', !!(editState && editState.on), JSON.stringify(editState));
+
+
 
       await evalPage(
         page.session,
@@ -748,11 +863,18 @@ async function main() {
       !!dbg2 && /原始尺寸/.test(dbg2) && /显示尺寸/.test(dbg2) && /px/.test(dbg2),
       String(dbg2 || '').replace(/\n/g, ' / ').slice(0, 170)
     );
+    /* 曾经这里出过 undefinedpx —— 界面读的字段根本不存在，溢出判定也永远为假。
+       一条断言把这个类别的错整片盖住。 */
+    record(
+      '排版数字里没有 undefined',
+      !/undefined|NaN/.test(String(dbg2 || '')),
+      /undefined|NaN/.test(String(dbg2 || '')) ? String(dbg2).replace(/\n/g, ' / ').slice(0, 160) : 'ok'
+    );
     const bubbleHit = /气泡识别 (\d+)\/(\d+)/.exec(String(dbg2 || ''));
     record(
-      '气泡识别真的生效（不是退回矩形）',
-      !!bubbleHit && Number(bubbleHit[1]) === Number(bubbleHit[2]) && Number(bubbleHit[1]) > 0,
-      bubbleHit ? `识别 ${bubbleHit[1]}/${bubbleHit[2]}` : 'Debug 里没有气泡识别结果'
+      SAMPLE_NAME ? '气泡识别率（真实样本，仅记录）' : '气泡识别真的生效（不是退回矩形）',
+      SAMPLE_NAME ? !!bubbleHit : !!bubbleHit && Number(bubbleHit[1]) === Number(bubbleHit[2]) && Number(bubbleHit[1]) > 0,
+      bubbleHit ? `识别 ${bubbleHit[1]}/${bubbleHit[2]}（其余退回矩形）` : 'Debug 里没有气泡识别结果'
     );
     await shot(page.session, '05-debug.png');
   } catch (e) {
@@ -781,6 +903,20 @@ async function main() {
   for (const r of results.filter(x => !x.ok)) console.log(`  失败：${r.name} ${r.detail}`);
   console.log(`截图：${SHOT_DIR}`);
   process.exit(pass === results.length ? 0 : 1);
+}
+
+try {
+  if (SAMPLE_NAME) {
+    /* 先准备好打包产物里的共享核心，坐标规范化要用它 */
+    const corePath = join(process.cwd(), 'dist', 'core.js');
+    if (existsSync(corePath)) {
+      new Function('globalThis', readFileSync(corePath, 'utf8') + '\n;globalThis.MXTCore = MXTCore;')(globalThis);
+    }
+    loadRealSample();
+  }
+} catch (e) {
+  console.error('真实样本装载失败：', e && e.message);
+  process.exit(1);
 }
 
 main();

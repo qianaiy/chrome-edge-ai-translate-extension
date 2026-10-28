@@ -249,6 +249,14 @@ export interface FitResult {
   height: number;
   /** 有没有缩到比最小字号还小 */
   shrunk: boolean;
+  /** 有没有因为放不下而截断（加了省略号） */
+  clamped: boolean;
+  /**
+   * 排完还装不下：横向超宽、纵向超高，或者被截断。
+   * 只有这个字段为真，界面才该提示用户「这句太长」——
+   * 之前界面读的是不存在的字段，所以溢出提示从来没出现过。
+   */
+  overflow: boolean;
 }
 
 /**
@@ -275,7 +283,7 @@ export function fitText(
   const lineHeight = opts.lineHeight ?? 1.22;
   const src = String(text || '').trim();
 
-  if (!src) return { fontSize: minFont, lines: [''], height: 0, shrunk: false };
+  if (!src) return { fontSize: minFont, lines: [''], height: 0, shrunk: false, clamped: false, overflow: false };
 
   const w = Math.max(1, boxWidth);
   const h = Math.max(1, boxHeight);
@@ -340,18 +348,24 @@ export function fitText(
   }
 
   /* 还是太长：截断 */
+  let clamped = false;
   if (lines.length > maxLines) {
     lines = lines.slice(0, maxLines);
     const last = lines[maxLines - 1];
     lines[maxLines - 1] = last.length > 1 ? last.slice(0, -1) + '…' : last;
     shrunk = true;
+    clamped = true;
   }
 
+  const widthOver = lines.some(l => estimateTextWidth(l, fontSize) > w * 1.02);
+  const heightOver = lines.length * fontSize * lineHeight > h * 1.02;
   return {
     fontSize,
     lines,
     height: lines.length * fontSize * lineHeight,
-    shrunk
+    shrunk,
+    clamped,
+    overflow: clamped || widthOver || heightOver
   };
 }
 

@@ -22,7 +22,10 @@
     "lint:secrets": "node scripts/secret-scan.mjs",
     "typeset": "node scripts/manga-typeset-check.mjs",
     "typeset:edge": "node scripts/manga-typeset-check.mjs --edge",
-    "typeset:all": "node scripts/manga-typeset-check.mjs && node scripts/manga-typeset-check.mjs --edge"
+    "typeset:all": "node scripts/manga-typeset-check.mjs && node scripts/manga-typeset-check.mjs --edge",
+    "samples:make": "python scripts/make-real-samples.py",
+    "typeset:jp": "node scripts/manga-typeset-check.mjs",
+    "real": "node scripts/manga-real-check.mjs"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
